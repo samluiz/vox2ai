@@ -1,0 +1,78 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vox2ai"
+version = "0.1.0"
+description = "Terminal-first Linux voice assistant using speech-to-text and OpenAI-compatible LLMs"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+keywords = ["voice", "assistant", "cli", "tui", "stt", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+
+dependencies = [
+    "click>=8.1",
+    "rich>=13.0",
+    "pydantic>=2.0",
+    "platformdirs>=4.0",
+    "tomli-w>=1.0",
+    "openai>=1.0",
+    "sounddevice>=0.4",
+    "soundfile>=0.12",
+    "faster-whisper>=1.0",
+    "textual>=0.41",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.3",
+    "mypy>=1.8",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "types-python-dateutil>=2.9",
+]
+
+[project.scripts]
+vox2ai = "vox2ai.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "ARG"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+exclude = ["tests/"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+filterwarnings = ["ignore::DeprecationWarning"]
+asyncio_mode = "auto"

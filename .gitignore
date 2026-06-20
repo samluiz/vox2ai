@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.tox/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.wav
+.vox2ai_test_config/
