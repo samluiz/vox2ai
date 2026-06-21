@@ -18,15 +18,15 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 #[derive(Clone)]
-struct SidecarState(Arc<Mutex<SidecarInner>>);
+pub struct SidecarState(pub Arc<Mutex<SidecarInner>>);
 
 #[derive(Clone)]
-struct ActivationState(Arc<Mutex<ActivationInner>>);
+pub struct ActivationState(pub Arc<Mutex<ActivationInner>>);
 
 #[derive(Clone)]
-struct WindowRuntimeState(Arc<Mutex<WindowRuntimeInner>>);
+pub struct WindowRuntimeState(pub Arc<Mutex<WindowRuntimeInner>>);
 
-struct SidecarInner {
+pub struct SidecarInner {
     child: Option<Child>,
     runtime_state: BackendRuntimeState,
     attempts: usize,
@@ -821,94 +821,10 @@ fn get_active_window_context() -> Result<Option<ActiveWindowContext>, String> {
     Ok(None)
 }
 
-#[tauri::command]
-fn get_desktop_session() -> detection::DesktopSession {
-    detection::detect_session()
-}
+// Command implementations are in main.rs to avoid macro conflicts
+// with multiple #[tauri::command] functions of the same name.
 
-#[tauri::command]
-fn get_activation_backend_status(
-    _app: AppHandle,
-    activation: tauri::State<'_, ActivationState>,
-) -> activation_backend::ActivationBackendStatus {
-    let session = detection::detect_session();
-    let kind = activation_backend::select_backend(&session);
-    let inner = activation.0.lock().unwrap();
-    let active = inner.shortcut.is_some() && inner.registration_error.is_none();
-    activation_backend::ActivationBackendStatus {
-        kind,
-        available: kind != activation_backend::ActivationBackendKind::Unsupported,
-        active,
-        session_type: format!("{:?}", session.session_type),
-        desktop: format!("{:?}", session.desktop),
-        shortcut: inner.shortcut.clone(),
-        message: activation_backend::backend_message(kind, &session),
-        details: inner.registration_error.clone().or_else(|| {
-            if kind == activation_backend::ActivationBackendKind::GnomeShortcutBridge {
-                Some("GNOME owns the keybinding. Configure via Settings → Keyboard → Custom Shortcuts.".to_string())
-            } else {
-                None
-            }
-        }),
-    }
-}
-
-#[tauri::command]
-fn get_gnome_bridge_status(app: AppHandle) -> Result<gnome_bridge::GnomeShortcutStatus, String> {
-    let cli_path = resolve_vox2aictl_path(&app)?;
-    let bridge = gnome_bridge::GnomeBridge::new(cli_path);
-    bridge.verify()
-}
-
-#[tauri::command]
-fn install_gnome_shortcut(
-    app: AppHandle,
-    shortcut: String,
-    behavior: String,
-) -> Result<gnome_bridge::GnomeShortcutStatus, String> {
-    let cli_path = resolve_vox2aictl_path(&app)?;
-    let bridge = gnome_bridge::GnomeBridge::new(cli_path);
-    bridge.install(&shortcut, &behavior)
-}
-
-#[tauri::command]
-fn remove_gnome_shortcut(app: AppHandle) -> Result<gnome_bridge::GnomeShortcutStatus, String> {
-    let cli_path = resolve_vox2aictl_path(&app)?;
-    let bridge = gnome_bridge::GnomeBridge::new(cli_path);
-    bridge.remove()
-}
-
-#[tauri::command]
-fn get_control_socket_path() -> String {
-    let server = control_server::ControlServer::new("vox2ai");
-    server.socket_path().display().to_string()
-}
-
-fn resolve_vox2aictl_path(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let sibling = parent.join("vox2aictl");
-            if sibling.is_file() {
-                return Ok(sibling);
-            }
-        }
-    }
-    if let Ok(dir) = app.path().resource_dir() {
-        let bundled = dir.join("binaries").join("vox2aictl");
-        if bundled.is_file() {
-            return Ok(bundled);
-        }
-    }
-    for candidate_dir in &["/usr/bin", "/usr/local/bin", "/usr/lib/vox2ai"] {
-        let candidate = PathBuf::from(candidate_dir).join("vox2aictl");
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-    Err("vox2aictl command not found. Install the full vox2ai package.".to_string())
-}
-
-fn handle_control_command(
+pub fn handle_control_command(
     app: &AppHandle,
     command: &control_protocol::ControlCommand,
 ) -> control_protocol::ControlResponse {
@@ -1055,13 +971,7 @@ pub fn run() {
             get_activation_runtime_status,
             get_backend_runtime_status,
             set_start_at_login,
-            get_active_window_context,
-            get_desktop_session,
-            get_activation_backend_status,
-            get_gnome_bridge_status,
-            install_gnome_shortcut,
-            remove_gnome_shortcut,
-            get_control_socket_path
+            get_active_window_context
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -1086,86 +996,95 @@ pub fn run() {
                 server.start(handler);
             }
 
-            let show = MenuItem::with_id(app, "show_widget", "Show widget", true, None::<&str>)?;
-            let hide = MenuItem::with_id(app, "hide_widget", "Hide widget", true, None::<&str>)?;
-            let record = MenuItem::with_id(
-                app,
-                "start_recording",
-                "Start recording",
-                true,
-                None::<&str>,
-            )?;
-            let settings =
-                MenuItem::with_id(app, "open_settings", "Open Settings", true, None::<&str>)?;
-            let diagnostics = MenuItem::with_id(
-                app,
-                "open_diagnostics",
-                "Open Diagnostics",
-                true,
-                None::<&str>,
-            )?;
-            let restart = MenuItem::with_id(
-                app,
-                "restart_backend",
-                "Restart backend",
-                true,
-                None::<&str>,
-            )?;
-            let quit = MenuItem::with_id(app, "quit", "Quit vox2ai", true, None::<&str>)?;
-            let menu = Menu::with_items(
-                app,
-                &[
-                    &show,
-                    &hide,
-                    &record,
-                    &settings,
-                    &diagnostics,
-                    &restart,
-                    &quit,
-                ],
-            )?;
-            let tray_icon = app
-                .default_window_icon()
-                .cloned()
-                .ok_or("missing default window icon")?;
-            TrayIconBuilder::new()
-                .menu(&menu)
-                .icon(tray_icon)
-                .show_menu_on_left_click(true)
-                .on_menu_event(|app, event| match event.id().as_ref() {
-                    "show_widget" => show_widget(app, true),
-                    "hide_widget" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.hide();
+            // Tray icon setup — non-fatal on Wayland/GNOME.
+            // If it fails (no system tray available), the app still works
+            // via global shortcut or the control channel.
+            let tray_result: Result<(), Box<dyn std::error::Error>> = (|| {
+                let show = MenuItem::with_id(app, "show_widget", "Show widget", true, None::<&str>)?;
+                let hide = MenuItem::with_id(app, "hide_widget", "Hide widget", true, None::<&str>)?;
+                let record = MenuItem::with_id(
+                    app,
+                    "start_recording",
+                    "Start recording",
+                    true,
+                    None::<&str>,
+                )?;
+                let settings =
+                    MenuItem::with_id(app, "open_settings", "Open Settings", true, None::<&str>)?;
+                let diagnostics = MenuItem::with_id(
+                    app,
+                    "open_diagnostics",
+                    "Open Diagnostics",
+                    true,
+                    None::<&str>,
+                )?;
+                let restart = MenuItem::with_id(
+                    app,
+                    "restart_backend",
+                    "Restart backend",
+                    true,
+                    None::<&str>,
+                )?;
+                let quit = MenuItem::with_id(app, "quit", "Quit vox2ai", true, None::<&str>)?;
+                let menu = Menu::with_items(
+                    app,
+                    &[
+                        &show,
+                        &hide,
+                        &record,
+                        &settings,
+                        &diagnostics,
+                        &restart,
+                        &quit,
+                    ],
+                )?;
+                let tray_icon = app
+                    .default_window_icon()
+                    .cloned()
+                    .ok_or("missing default window icon")?;
+                TrayIconBuilder::new()
+                    .menu(&menu)
+                    .icon(tray_icon)
+                    .show_menu_on_left_click(true)
+                    .on_menu_event(|app, event| match event.id().as_ref() {
+                        "show_widget" => show_widget(app, true),
+                        "hide_widget" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.hide();
+                            }
                         }
-                    }
-                    "start_recording" => {
-                        show_widget(app, false);
-                        let _ = app.emit("tray_start_recording", ());
-                    }
-                    "open_settings" => {
-                        show_widget(app, true);
-                        let _ = app.emit("tray_open_settings", ());
-                    }
-                    "open_diagnostics" => {
-                        show_widget(app, true);
-                        let _ = app.emit("tray_open_diagnostics", ());
-                    }
-                    "restart_backend" => {
-                        if let Some(state) = app.try_state::<SidecarState>() {
-                            let _ = app.emit("backend_restarting", ());
-                            let _ = restart_backend_impl(app.clone(), state.inner().clone());
+                        "start_recording" => {
+                            show_widget(app, false);
+                            let _ = app.emit("tray_start_recording", ());
                         }
-                    }
-                    "quit" => {
-                        if let Some(state) = app.try_state::<SidecarState>() {
-                            stop_backend(app, state.inner());
+                        "open_settings" => {
+                            show_widget(app, true);
+                            let _ = app.emit("tray_open_settings", ());
                         }
-                        app.exit(0);
-                    }
-                    _ => {}
-                })
-                .build(app)?;
+                        "open_diagnostics" => {
+                            show_widget(app, true);
+                            let _ = app.emit("tray_open_diagnostics", ());
+                        }
+                        "restart_backend" => {
+                            if let Some(state) = app.try_state::<SidecarState>() {
+                                let _ = app.emit("backend_restarting", ());
+                                let _ = restart_backend_impl(app.clone(), state.inner().clone());
+                            }
+                        }
+                        "quit" => {
+                            if let Some(state) = app.try_state::<SidecarState>() {
+                                stop_backend(app, state.inner());
+                            }
+                            app.exit(0);
+                        }
+                        _ => {}
+                    })
+                    .build(app)?;
+                Ok(())
+            })();
+            if let Err(e) = tray_result {
+                eprintln!("[vox2ai] tray icon setup failed (non-fatal): {e}");
+            }
 
             Ok(())
         })
