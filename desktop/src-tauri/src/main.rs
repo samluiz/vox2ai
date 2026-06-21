@@ -165,7 +165,11 @@ fn main() {
             let _ = server.clean_stale_socket();
             server.start(handler);
 
-            // Tray icon — non-fatal on Wayland
+            // Tray icon — skipped on Wayland (no system tray protocol),
+            // non-fatal on X11 if tray creation fails.
+            let session = detection::detect_session();
+            let is_wayland = detection::is_session_wayland(&session);
+            if !is_wayland {
             let _: Result<(), Box<dyn std::error::Error>> = (|| {
                 let show = MenuItem::with_id(app, "show_widget", "Show widget", true, None::<&str>)?;
                 let hide = MenuItem::with_id(app, "hide_widget", "Hide widget", true, None::<&str>)?;
@@ -205,6 +209,7 @@ fn main() {
                 }
                 Ok(())
             })();
+            } // if !is_wayland
 
             Ok(())
         })
