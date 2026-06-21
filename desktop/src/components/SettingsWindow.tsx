@@ -1,19 +1,35 @@
 import React, { useState, useCallback, useEffect, useRef } from "react";
 import type { WebSocketClient } from "../api/websocket";
+import type { BackendConnectionState } from "../api/websocket";
+import RecordingSettings from "./RecordingSettings";
+import type { RecordingActivationMode } from "../utils/shortcut";
+import { useLargeOverlayWindow } from "../hooks/useLargeOverlayWindow";
 
 interface Props {
   ws: WebSocketClient | null;
   initialSettings: Record<string, unknown> | null;
+  backendConnectionState: BackendConnectionState;
+  onOpenDiagnostics: () => void;
   onClose: () => void;
   onSettingsChanged: () => void;
 }
 
-type Section = "provider" | "voice" | "commands" | "window" | "advanced" | "about";
+type Section =
+  | "provider"
+  | "voice"
+  | "commands"
+  | "general"
+  | "context"
+  | "window"
+  | "advanced"
+  | "about";
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "provider", label: "Provider" },
-  { id: "voice", label: "Voice" },
+  { id: "voice", label: "Voice & Controls" },
   { id: "commands", label: "Commands" },
+  { id: "general", label: "General" },
+  { id: "context", label: "Context" },
   { id: "window", label: "Window" },
   { id: "advanced", label: "Advanced" },
   { id: "about", label: "About" },
@@ -29,7 +45,16 @@ const PROVIDER_PRESETS: Record<string, { base_url: string; auth_type: string }> 
   custom: { base_url: "", auth_type: "bearer_or_none" },
 };
 
-const SettingsWindow: React.FC<Props> = ({ ws, initialSettings, onClose, onSettingsChanged }) => {
+const SettingsWindow: React.FC<Props> = ({
+  ws,
+  initialSettings,
+  backendConnectionState,
+  onOpenDiagnostics,
+  onClose,
+  onSettingsChanged,
+}) => {
+  useLargeOverlayWindow();
+
   const [section, setSection] = useState<Section>("provider");
   const [settings, setSettings] = useState<Record<string, unknown>>(initialSettings ?? {});
   const [dirty, setDirty] = useState(false);
@@ -82,8 +107,14 @@ const SettingsWindow: React.FC<Props> = ({ ws, initialSettings, onClose, onSetti
 
     // Other sections (from the settings state)
     if (settings.voice) patch.voice = settings.voice;
+    if (settings.recording) patch.recording = settings.recording;
     if (settings.transcription) patch.transcription = settings.transcription;
     if (settings.commands) patch.commands = settings.commands;
+    if (settings.general) patch.general = settings.general;
+    if (settings.conversation) patch.conversation = settings.conversation;
+    if (settings.context) patch.context = settings.context;
+    if (settings.quick_actions) patch.quick_actions = settings.quick_actions;
+    if (settings.onboarding) patch.onboarding = settings.onboarding;
     if (settings.desktop_window) patch.desktop_window = settings.desktop_window;
     if (settings.debug) patch.debug = settings.debug;
 
@@ -250,6 +281,7 @@ const SettingsWindow: React.FC<Props> = ({ ws, initialSettings, onClose, onSetti
 
   const renderVoice = () => {
     const voice = (settings.voice as Record<string, unknown>) ?? {};
+    const recording = (settings.recording as Record<string, unknown>) ?? {};
     const trans = (settings.transcription as Record<string, unknown>) ?? {};
     const partial = (trans.partial as Record<string, unknown>) ?? {};
 
@@ -268,10 +300,26 @@ const SettingsWindow: React.FC<Props> = ({ ws, initialSettings, onClose, onSetti
       }));
       updateDirty();
     };
+    const setRecording = (patch: {
+      activation_mode?: RecordingActivationMode;
+      shortcut?: string;
+    }) => {
+      setSettings((s) => ({ ...s, recording: { ...recording, ...patch } }));
+      updateDirty();
+    };
 
     return (
       <div className="settings-section">
-        <h3 className="settings-section-title">Voice & Transcription</h3>
+        <h3 className="settings-section-title">Voice & Controls</h3>
+
+        <RecordingSettings
+          activationMode={
+            ((recording.activation_mode as string) ?? "hold-to-talk") as RecordingActivationMode
+          }
+          shortcut={(recording.shortcut as string) ?? "Ctrl"}
+          onChange={setRecording}
+          onReset={() => setRecording({ activation_mode: "hold-to-talk", shortcut: "Ctrl" })}
+        />
 
         <div className="form-group">
           <label className="form-label">Whisper model</label>
@@ -447,6 +495,175 @@ const SettingsWindow: React.FC<Props> = ({ ws, initialSettings, onClose, onSetti
           />
         </div>
 
+        <div className="form-group">
+          <label className="form-check-label">
+            <input
+              type="checkbox"
+              checked={(cmds.show_risk_level as boolean) ?? true}
+              onChange={(e) => setCmd("show_risk_level", e.target.checked)}
+            />
+            {" "}Show command risk level
+          </label>
+        </div>
+
+        <div className="form-actions">
+          <button className="form-btn form-btn-primary" onClick={save} disabled={!dirty || saving}>
+            {saving ? "Saving…" : saved ? "Saved ✓" : "Save"}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderGeneral = () => {
+    const general = (settings.general as Record<string, unknown>) ?? {};
+    const conversation = (settings.conversation as Record<string, unknown>) ?? {};
+    const quickActions = (settings.quick_actions as Record<string, unknown>) ?? {};
+
+    const setGeneral = (key: string, value: unknown) => {
+      setSettings((s) => ({ ...s, general: { ...general, [key]: value } }));
+      updateDirty();
+    };
+    const setConversation = (key: string, value: unknown) => {
+      setSettings((s) => ({ ...s, conversation: { ...conversation, [key]: value } }));
+      updateDirty();
+    };
+    const setQuickActions = (key: string, value: unknown) => {
+      setSettings((s) => ({ ...s, quick_actions: { ...quickActions, [key]: value } }));
+      updateDirty();
+    };
+
+    return (
+      <div className="settings-section">
+        <h3 className="settings-section-title">General</h3>
+        <div className="form-group">
+          <label className="form-check-label">
+            <input
+              type="checkbox"
+              checked={(general.minimize_to_tray as boolean) ?? true}
+              onChange={(e) => setGeneral("minimize_to_tray", e.target.checked)}
+            />
+            {" "}Minimize to tray
+          </label>
+        </div>
+        <div className="form-group">
+          <label className="form-check-label">
+            <input
+              type="checkbox"
+              checked={(general.start_hidden as boolean) ?? false}
+              onChange={(e) => setGeneral("start_hidden", e.target.checked)}
+            />
+            {" "}Start hidden
+          </label>
+        </div>
+        <div className="form-group disabled-setting">
+          <label className="form-check-label">
+            <input type="checkbox" disabled />
+            {" "}Launch at login
+          </label>
+          <p className="form-hint">Coming later.</p>
+        </div>
+        <div className="form-group">
+          <label className="form-check-label">
+            <input
+              type="checkbox"
+              checked={(conversation.enabled as boolean) ?? true}
+              onChange={(e) => setConversation("enabled", e.target.checked)}
+            />
+            {" "}Current-session conversation context
+          </label>
+          <p className="form-hint">Keeps recent prompts in memory until the app closes.</p>
+        </div>
+        <div className="form-group">
+          <label className="form-label">Max context messages</label>
+          <input
+            className="form-input"
+            type="number"
+            value={(conversation.max_messages as number) ?? 10}
+            onChange={(e) => setConversation("max_messages", parseInt(e.target.value))}
+          />
+        </div>
+        <div className="form-group">
+          <label className="form-check-label">
+            <input
+              type="checkbox"
+              checked={(quickActions.enabled as boolean) ?? true}
+              onChange={(e) => setQuickActions("enabled", e.target.checked)}
+            />
+            {" "}Quick actions menu
+          </label>
+        </div>
+        <div className="form-actions">
+          <button className="form-btn form-btn-secondary" onClick={() => send({ type: "clear_conversation" })}>
+            Clear conversation
+          </button>
+          <button className="form-btn form-btn-primary" onClick={save} disabled={!dirty || saving}>
+            {saving ? "Saving…" : saved ? "Saved ✓" : "Save"}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderContext = () => {
+    const context = (settings.context as Record<string, unknown>) ?? {};
+    const setContext = (key: string, value: unknown) => {
+      setSettings((s) => ({ ...s, context: { ...context, [key]: value } }));
+      updateDirty();
+    };
+
+    return (
+      <div className="settings-section">
+        <h3 className="settings-section-title">Context</h3>
+        <p className="settings-desc">
+          Clipboard context is read only when a prompt/action asks for it.
+        </p>
+        <div className="form-group">
+          <label className="form-check-label">
+            <input
+              type="checkbox"
+              checked={(context.clipboard_enabled as boolean) ?? true}
+              onChange={(e) => setContext("clipboard_enabled", e.target.checked)}
+            />
+            {" "}Clipboard context
+          </label>
+        </div>
+        <div className="form-group">
+          <label className="form-check-label">
+            <input
+              type="checkbox"
+              checked={(context.clipboard_auto_detect as boolean) ?? true}
+              onChange={(e) => setContext("clipboard_auto_detect", e.target.checked)}
+            />
+            {" "}Auto-detect clipboard prompts
+          </label>
+        </div>
+        <div className="form-group">
+          <label className="form-label">Max clipboard characters</label>
+          <input
+            className="form-input"
+            type="number"
+            value={(context.max_clipboard_chars as number) ?? 8000}
+            onChange={(e) => setContext("max_clipboard_chars", parseInt(e.target.value))}
+          />
+        </div>
+        <div className="form-group">
+          <label className="form-check-label">
+            <input
+              type="checkbox"
+              checked={(context.active_window_enabled as boolean) ?? true}
+              onChange={(e) => setContext("active_window_enabled", e.target.checked)}
+            />
+            {" "}Active window context
+          </label>
+        </div>
+        <div className="form-group disabled-setting">
+          <label className="form-check-label">
+            <input type="checkbox" disabled checked={false} readOnly />
+            {" "}Selected text capture
+          </label>
+          <p className="form-hint">Falls back to clipboard context on this platform.</p>
+        </div>
         <div className="form-actions">
           <button className="form-btn form-btn-primary" onClick={save} disabled={!dirty || saving}>
             {saving ? "Saving…" : saved ? "Saved ✓" : "Save"}
@@ -467,6 +684,49 @@ const SettingsWindow: React.FC<Props> = ({ ws, initialSettings, onClose, onSetti
     return (
       <div className="settings-section">
         <h3 className="settings-section-title">Window</h3>
+
+        <div className="form-group">
+          <label className="form-check-label">
+            <input
+              type="checkbox"
+              checked={(dw.user_resizable as boolean) ?? true}
+              onChange={(e) => setDw("user_resizable", e.target.checked)}
+            />
+            {" "}User resizable
+          </label>
+        </div>
+
+        <div className="form-group">
+          <label className="form-check-label">
+            <input
+              type="checkbox"
+              checked={(dw.remember_size as boolean) ?? true}
+              onChange={(e) => setDw("remember_size", e.target.checked)}
+            />
+            {" "}Remember resized widget size
+          </label>
+        </div>
+
+        <div className="form-group">
+          <button
+            className="form-btn form-btn-secondary"
+            type="button"
+            onClick={() => {
+              setSettings((s) => ({
+                ...s,
+                desktop_window: {
+                  ...dw,
+                  manual_size: false,
+                  width: 520,
+                  height: 160,
+                },
+              }));
+              updateDirty();
+            }}
+          >
+            Reset widget size
+          </button>
+        </div>
 
         <div className="form-group">
           <label className="form-check-label">
@@ -528,6 +788,16 @@ const SettingsWindow: React.FC<Props> = ({ ws, initialSettings, onClose, onSetti
     <div className="settings-section">
       <h3 className="settings-section-title">Advanced</h3>
 
+      <div className="settings-status-row">
+        <span>Backend status</span>
+        <strong>{backendConnectionState}</strong>
+      </div>
+
+      <div className="form-group">
+        <button className="form-btn form-btn-secondary" onClick={onOpenDiagnostics}>
+          Open Diagnostics
+        </button>
+      </div>
       <div className="form-group">
         <button className="form-btn form-btn-secondary" onClick={() => send({ type: "open_logs" })}>
           Open logs folder
@@ -562,7 +832,7 @@ const SettingsWindow: React.FC<Props> = ({ ws, initialSettings, onClose, onSetti
           <dt>Version</dt>
           <dd>0.1.0</dd>
           <dt>Backend</dt>
-          <dd>{settings ? "Connected" : "Disconnected"}</dd>
+          <dd>{backendConnectionState}</dd>
           <dt>STT engine</dt>
           <dd>faster-whisper</dd>
         </dl>
@@ -578,6 +848,8 @@ const SettingsWindow: React.FC<Props> = ({ ws, initialSettings, onClose, onSetti
       case "provider": return renderProvider();
       case "voice": return renderVoice();
       case "commands": return renderCommands();
+      case "general": return renderGeneral();
+      case "context": return renderContext();
       case "window": return renderWindow();
       case "advanced": return renderAdvanced();
       case "about": return renderAbout();
@@ -586,18 +858,8 @@ const SettingsWindow: React.FC<Props> = ({ ws, initialSettings, onClose, onSetti
 
   // Detect backend connection status.
   useEffect(() => {
-    if (!ws) {
-      setBackendConnected(false);
-      return;
-    }
-    setBackendConnected(true);
-    const unsub = ws.onEvent((event: { type: string }) => {
-      if (event.type === "hello" || event.type === "settings") {
-        setBackendConnected(true);
-      }
-    });
-    return () => { unsub(); };
-  }, [ws]);
+    setBackendConnected(backendConnectionState === "connected");
+  }, [backendConnectionState]);
 
   // Listen for backend responses.
   useEffect(() => {

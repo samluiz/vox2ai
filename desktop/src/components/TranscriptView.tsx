@@ -1,4 +1,5 @@
 import React from "react";
+import CopyButton from "./CopyButton";
 
 interface TranscriptViewProps {
   text: string;
@@ -7,11 +8,16 @@ interface TranscriptViewProps {
 
 const TranscriptView: React.FC<TranscriptViewProps> = ({ text, source }) => {
   if (!text) return null;
-  const label = source === "text" ? "You:" : "You said:";
+  const sourceKind = source === "text" ? "text" : "voice";
   return (
-    <div className="transcript-view">
-      <span className="transcript-label">{label}</span>{" "}
-      <span className="transcript-text">{text}</span>
+    <div className={`message user message--${sourceKind}`}>
+      <div className="message-meta">
+        <CopyButton text={text} className="message-copy" title="Copy prompt" />
+        <span className="message-label">You</span>
+      </div>
+      <div className="message-bubble transcript-view">
+        <span className="transcript-text">{text}</span>
+      </div>
     </div>
   );
 };

@@ -5,6 +5,7 @@ from openai import APIConnectionError, APIError, AuthenticationError, OpenAI, Ra
 
 from vox2ai.config import AssistantConfig
 from vox2ai.errors import LLMError
+from vox2ai.secrets import get_secret_store
 
 
 class LLMClient:
@@ -21,9 +22,12 @@ class LLMClient:
     def _get_client(self) -> OpenAI:
         if self._client is not None:
             return self._client
-        api_key = os.environ.get(self._config.api_key_env)
+        api_key = os.environ.get(self._config.api_key_env) or get_secret_store().get("api_key")
         if not api_key:
-            raise LLMError(f"API key environment variable '{self._config.api_key_env}' is not set.")
+            raise LLMError(
+                f"API key environment variable '{self._config.api_key_env}' is not set, "
+                "and no API key is saved in Settings."
+            )
         self._client = OpenAI(
             api_key=api_key,
             base_url=self._config.base_url,

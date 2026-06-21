@@ -22,6 +22,13 @@ class StateEvent:
 
 
 @dataclass
+class BackendStatusEvent:
+    type: Literal["backend_status"] = "backend_status"
+    status: str = "connected"
+    message: str = "Ready"
+
+
+@dataclass
 class AudioLevelEvent:
     type: Literal["audio_level"] = "audio_level"
     rms: float = 0.0
@@ -41,6 +48,12 @@ class PartialTranscriptEvent:
     type: Literal["partial_transcript"] = "partial_transcript"
     text: str = ""
     stable: bool = False
+
+
+@dataclass
+class OperationCancelledEvent:
+    type: Literal["operation_cancelled"] = "operation_cancelled"
+    operation: str = "recording"
 
 
 @dataclass
@@ -64,6 +77,9 @@ class CommandApprovalEvent:
     type: Literal["command_approval"] = "command_approval"
     command: str = ""
     reason: str | None = None
+    working_directory: str = ""
+    risk: Literal["low", "medium", "high"] = "low"
+    expected_effect: str = ""
 
 
 @dataclass
@@ -133,12 +149,33 @@ class ProviderModelsErrorEvent:
     message: str = ""
 
 
+@dataclass
+class DiagnosticsEvent:
+    type: Literal["diagnostics"] = "diagnostics"
+    diagnostics: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ContextPreviewEvent:
+    type: Literal["context_preview"] = "context_preview"
+    clipboard_available: bool = False
+    clipboard_preview: str = ""
+    active_window: dict[str, str] | None = None
+
+
+@dataclass
+class ConversationClearedEvent:
+    type: Literal["conversation_cleared"] = "conversation_cleared"
+
+
 BackendEvent = (
     HelloEvent
     | StateEvent
+    | BackendStatusEvent
     | AudioLevelEvent
     | TranscriptEvent
     | PartialTranscriptEvent
+    | OperationCancelledEvent
     | AnswerStartEvent
     | AnswerDeltaEvent
     | AnswerDoneEvent
@@ -153,6 +190,9 @@ BackendEvent = (
     | ProviderTestResultEvent
     | ProviderModelsEvent
     | ProviderModelsErrorEvent
+    | DiagnosticsEvent
+    | ContextPreviewEvent
+    | ConversationClearedEvent
 )
 
 
@@ -195,6 +235,11 @@ class CancelRecordingCommand:
 
 
 @dataclass
+class CancelCurrentOperationCommand:
+    type: Literal["cancel_current_operation"] = "cancel_current_operation"
+
+
+@dataclass
 class ApproveCommandCommand:
     type: Literal["approve_command"] = "approve_command"
 
@@ -208,6 +253,7 @@ class DenyCommandCommand:
 class SubmitTextPromptCommand:
     type: Literal["submit_text_prompt"] = "submit_text_prompt"
     text: str = ""
+    context: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -258,11 +304,27 @@ class ResetSettingsCommand:
     type: Literal["reset_settings"] = "reset_settings"
 
 
+@dataclass
+class GetDiagnosticsCommand:
+    type: Literal["get_diagnostics"] = "get_diagnostics"
+
+
+@dataclass
+class ClearConversationCommand:
+    type: Literal["clear_conversation"] = "clear_conversation"
+
+
+@dataclass
+class GetContextPreviewCommand:
+    type: Literal["get_context_preview"] = "get_context_preview"
+
+
 FrontendCommand = (
     PingCommand
     | StartRecordingCommand
     | StopRecordingCommand
     | CancelRecordingCommand
+    | CancelCurrentOperationCommand
     | ApproveCommandCommand
     | DenyCommandCommand
     | SubmitTextPromptCommand
@@ -274,6 +336,9 @@ FrontendCommand = (
     | OpenLogsCommand
     | OpenConfigFolderCommand
     | ResetSettingsCommand
+    | GetDiagnosticsCommand
+    | ClearConversationCommand
+    | GetContextPreviewCommand
 )
 
 
@@ -299,6 +364,7 @@ def parse_command(raw: str) -> FrontendCommand | ErrorEvent:
         "start_recording": StartRecordingCommand,
         "stop_recording": StopRecordingCommand,
         "cancel_recording": CancelRecordingCommand,
+        "cancel_current_operation": CancelCurrentOperationCommand,
         "approve_command": ApproveCommandCommand,
         "deny_command": DenyCommandCommand,
         "submit_text_prompt": SubmitTextPromptCommand,
@@ -310,6 +376,9 @@ def parse_command(raw: str) -> FrontendCommand | ErrorEvent:
         "open_logs": OpenLogsCommand,
         "open_config_folder": OpenConfigFolderCommand,
         "reset_settings": ResetSettingsCommand,
+        "get_diagnostics": GetDiagnosticsCommand,
+        "clear_conversation": ClearConversationCommand,
+        "get_context_preview": GetContextPreviewCommand,
     }
 
     cls = mapping.get(typ)

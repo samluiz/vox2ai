@@ -1,12 +1,23 @@
-import React, { useCallback, useRef } from "react";
+import React, { useCallback, useRef, useState } from "react";
+import { QUICK_ACTIONS } from "../utils/context";
 
 interface PromptInputProps {
   disabled: boolean;
   onSubmit: (text: string) => void;
+  quickActionsEnabled?: boolean;
+  onQuickAction?: (prompt: string) => void;
 }
 
-const PromptInput: React.FC<PromptInputProps> = ({ disabled, onSubmit }) => {
+const PromptInput: React.FC<PromptInputProps> = ({
+  disabled,
+  onSubmit,
+  quickActionsEnabled = true,
+  onQuickAction,
+}) => {
   const inputRef = useRef<HTMLInputElement>(null);
+  const [hasValue, setHasValue] = useState(false);
+  const [isFocused, setIsFocused] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -17,6 +28,7 @@ const PromptInput: React.FC<PromptInputProps> = ({ disabled, onSubmit }) => {
         if (value) {
           onSubmit(value);
           if (inputRef.current) inputRef.current.value = "";
+          setHasValue(false);
         }
       }
       if (e.key === "Escape") {
@@ -25,6 +37,7 @@ const PromptInput: React.FC<PromptInputProps> = ({ disabled, onSubmit }) => {
         if (inputRef.current) {
           if (inputRef.current.value) {
             inputRef.current.value = "";
+            setHasValue(false);
           } else {
             inputRef.current.blur();
           }
@@ -35,16 +48,60 @@ const PromptInput: React.FC<PromptInputProps> = ({ disabled, onSubmit }) => {
   );
 
   return (
-    <input
-      ref={inputRef}
-      className="prompt-input"
-      type="text"
-      placeholder="Ask or type..."
-      disabled={disabled}
-      onKeyDown={handleKeyDown}
-      autoComplete="off"
-      spellCheck={false}
-    />
+    <div
+      className={`prompt-shell ${disabled ? "prompt-shell--disabled" : ""} ${
+        isFocused ? "prompt-shell--focused" : ""
+      }`}
+    >
+      {quickActionsEnabled && (
+        <button
+          className="quick-actions-trigger"
+          type="button"
+          aria-label="Open quick actions"
+          title="Quick actions"
+          disabled={disabled}
+          onClick={() => setMenuOpen((open) => !open)}
+        >
+          +
+        </button>
+      )}
+      <input
+        ref={inputRef}
+        className="prompt-input"
+        type="text"
+        placeholder="Ask or type..."
+        disabled={disabled}
+        onKeyDown={handleKeyDown}
+        onChange={(e) => setHasValue(Boolean(e.currentTarget.value.trim()))}
+        onFocus={() => setIsFocused(true)}
+        onBlur={() => setIsFocused(false)}
+        autoComplete="off"
+        spellCheck={false}
+        aria-label="Ask or type"
+      />
+      {isFocused && hasValue && !disabled && (
+        <span className="prompt-submit-hint" aria-hidden="true">
+          ↵
+        </span>
+      )}
+      {menuOpen && !disabled && (
+        <div className="quick-actions-menu">
+          {QUICK_ACTIONS.map((action) => (
+            <button
+              key={action.id}
+              className="quick-action-item"
+              type="button"
+              onClick={() => {
+                setMenuOpen(false);
+                onQuickAction?.(action.prompt);
+              }}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 };
 

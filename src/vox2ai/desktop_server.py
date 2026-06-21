@@ -11,7 +11,14 @@ from pathlib import Path
 from typing import Any
 
 from vox2ai.agent import AgentDecision, parse_agent_decision
-from vox2ai.commands import CommandResult, is_blocked, requires_approval, run_command
+from vox2ai.commands import (
+    CommandResult,
+    classify_command_risk,
+    describe_command_effect,
+    is_blocked,
+    requires_approval,
+    run_command,
+)
 from vox2ai.config import AppConfig, load_config, save_config
 from vox2ai.desktop_protocol import (
     AnswerDeltaEvent,
@@ -19,12 +26,17 @@ from vox2ai.desktop_protocol import (
     AnswerStartEvent,
     AudioLevelEvent,
     BackendEvent,
+    BackendStatusEvent,
     CommandApprovalEvent,
     CommandResultEvent,
     CommandRunningEvent,
+    ContextPreviewEvent,
+    ConversationClearedEvent,
+    DiagnosticsEvent,
     ErrorEvent,
     HelloEvent,
     ListProviderModelsCommand,
+    OperationCancelledEvent,
     PartialTranscriptEvent,
     ProviderModelsErrorEvent,
     ProviderModelsEvent,
@@ -48,7 +60,7 @@ from vox2ai.prompts import COMMAND_AGENT_SYSTEM_PROMPT, COMMAND_RESULT_PROMPT
 from vox2ai.providers import create_adapter
 from vox2ai.recorder import StreamingRecorder
 from vox2ai.secrets import get_secret_store
-from vox2ai.settings import needs_setup, sanitize_config
+from vox2ai.settings import api_key_configured, needs_setup, sanitize_config
 from vox2ai.stt import transcribe_audio
 from vox2ai.timing import Timer
 from vox2ai.transcript import build_initial_prompt
@@ -97,7 +109,9 @@ class DesktopController:
         self._partial_task: asyncio.Task[object] | None = None
         self._partial_transcriber: LocalPartialTranscriber | None = None
         self._recording_generation = 0
+        self._operation_generation = 0
         self._last_cmd: object | None = None
+        self._conversation: list[dict[str, str]] = []
 
     def set_broadcast(
         self, fn: Callable[[BackendEvent], None], loop: asyncio.AbstractEventLoop
@@ -114,6 +128,77 @@ class DesktopController:
 
     def _send_partial(self, text: str) -> None:
         self._send(PartialTranscriptEvent(text=text, stable=False))
+
+    def _append_conversation(self, role: str, content: str) -> None:
+        if not self._config.conversation.enabled:
+            return
+        text = content.strip()
+        if not text:
+            return
+        self._conversation.append({"role": role, "content": text})
+        max_messages = self._config.conversation.max_messages
+        if len(self._conversation) > max_messages:
+            self._conversation = self._conversation[-max_messages:]
+
+    def _build_prompt(self, user_text: str, context: dict[str, Any] | None = None) -> str:
+        parts: list[str] = []
+        if self._config.conversation.enabled and self._conversation:
+            lines = ["Recent conversation in this app session:"]
+            for item in self._conversation[-self._config.conversation.max_messages :]:
+                role = "User" if item.get("role") == "user" else "Assistant"
+                lines.append(f"{role}: {item.get('content', '')}")
+            parts.append("\n".join(lines))
+
+        context_parts = _format_prompt_context(
+            context or {},
+            self._config.context.max_clipboard_chars,
+        )
+        if context_parts:
+            parts.append(context_parts)
+
+        parts.append(f"User request:\n{user_text}")
+        return "\n\n".join(parts)
+
+    def _build_diagnostics(self) -> dict[str, Any]:
+        from vox2ai.config import config_path
+
+        mic_available, mic_message = _check_microphone_available()
+        cfg_path = config_path()
+        log_dir = _get_log_dir()
+        provider_configured = api_key_configured(self._config)
+        return {
+            "backend": {"status": "running"},
+            "websocket": {"status": "connected"},
+            "provider": {
+                "configured": provider_configured,
+                "provider": self._config.assistant.provider,
+                "model": self._config.assistant.model,
+                "base_url": self._config.assistant.base_url,
+                "api_key": "configured" if provider_configured else "missing",
+            },
+            "microphone": {"available": mic_available, "message": mic_message},
+            "shortcut": {
+                "status": "configured",
+                "shortcut": self._config.recording.shortcut,
+                "mode": self._config.recording.activation_mode,
+            },
+            "transcription": {
+                "status": "ready",
+                "mode": self._config.transcription.mode,
+                "model": self._config.voice.whisper_model,
+                "language": self._config.voice.primary_language,
+            },
+            "conversation": {
+                "enabled": self._config.conversation.enabled,
+                "messages": len(self._conversation),
+            },
+            "paths": {
+                "logs": str(log_dir),
+                "config": str(cfg_path),
+            },
+            "app": {"version": "0.1.0"},
+            "backend_version": "0.1.0",
+        }
 
     def _on_partial_result(self, generation: int, partial: PartialTranscript) -> None:
         """Handle a partial transcript result on the event loop."""
@@ -208,11 +293,15 @@ class DesktopController:
             "start_recording": self._handle_start_recording,
             "stop_recording": self._handle_stop_recording,
             "cancel_recording": self._handle_cancel_recording,
+            "cancel_current_operation": self._handle_cancel_current_operation,
             "approve_command": self._handle_approve_command,
             "deny_command": self._handle_deny_command,
             "submit_text_prompt": self._handle_submit_text_prompt,
             "get_settings": self._handle_get_settings,
             "update_settings": self._handle_update_settings,
+            "get_diagnostics": self._handle_get_diagnostics,
+            "clear_conversation": self._handle_clear_conversation,
+            "get_context_preview": self._handle_get_context_preview,
             "test_provider": self._handle_test_provider,
             "list_provider_models": self._handle_list_provider_models,
             "delete_api_key": self._handle_delete_api_key,
@@ -228,6 +317,10 @@ class DesktopController:
                 self._send(ErrorEvent(message=f"Unknown command: {cmd.type}"))
             return
 
+        if cmd.type in {"cancel_recording", "cancel_current_operation"}:
+            await handler()
+            return
+
         async with self._busy_lock:
             await handler()
 
@@ -236,6 +329,7 @@ class DesktopController:
             self._send(ErrorEvent(message="Busy — finish current request first"))
             return
 
+        self._operation_generation += 1
         self._stop_partial_loop()
         self._timer.reset()
         self._timer.start("record")
@@ -263,6 +357,7 @@ class DesktopController:
         if self._state != ServerState.LISTENING or self._recorder is None:
             return
 
+        generation = self._operation_generation
         self._state = ServerState.TRANSCRIBING
         self._send_state("transcribing", "Transcribing...")
         self._stop_partial_loop()
@@ -275,6 +370,11 @@ class DesktopController:
 
         self._timer.stop("record")
 
+        if generation != self._operation_generation:
+            if isinstance(recorded, Path):
+                recorded.unlink(missing_ok=True)
+            return
+
         if isinstance(recorded, Vox2AIError):
             self._error_out(str(recorded))
             return
@@ -283,6 +383,8 @@ class DesktopController:
 
         result = await loop.run_in_executor(None, _do_transcription, path, self._config)
         path.unlink(missing_ok=True)
+        if generation != self._operation_generation:
+            return
 
         if isinstance(result, Vox2AIError):
             self._error_out(str(result))
@@ -294,18 +396,35 @@ class DesktopController:
 
         self._state = ServerState.THINKING
         self._send_state("thinking", "Thinking...")
-        await self._process_user_prompt(transcript)
+        await self._process_user_prompt(transcript, generation)
 
     async def _handle_cancel_recording(self) -> None:
-        if self._state != ServerState.LISTENING:
+        await self._handle_cancel_current_operation()
+
+    async def _handle_cancel_current_operation(self) -> None:
+        if self._state == ServerState.READY:
             return
+
+        operation = "recording"
+        if self._state == ServerState.TRANSCRIBING:
+            operation = "transcription"
+        elif self._state in {ServerState.THINKING, ServerState.STREAMING_ANSWER}:
+            operation = "answer"
+        elif self._state == ServerState.APPROVAL_REQUIRED:
+            operation = "approval"
+        elif self._state == ServerState.RUNNING_COMMAND:
+            operation = "command"
+
         if self._recorder is not None:
             self._recorder.cancel()
             self._recorder = None
+        self._pending_decision = None
         self._stop_partial_loop()
+        self._operation_generation += 1
         self._send_partial("")
         self._state = ServerState.READY
-        self._send_state("ready", "Ready")
+        self._send(OperationCancelledEvent(operation=operation))
+        self._send_state("ready", "Cancelled.")
 
     async def _handle_submit_text_prompt(self) -> None:
         """Handle a typed text prompt from the frontend."""
@@ -320,16 +439,35 @@ class DesktopController:
             return
 
         self._timer.reset()
+        generation = self._operation_generation + 1
+        self._operation_generation = generation
         self._state = ServerState.THINKING
         self._send(TranscriptEvent(text=text, raw_text=None, source="text"))
         self._send_state("thinking", "Thinking...")
-        await self._process_user_prompt(text)
+        await self._process_user_prompt(text, generation, cmd.context)
 
     async def _handle_get_settings(self) -> None:
         """Return sanitized settings to the frontend."""
         sanitized = sanitize_config(self._config)
         sanitized["needs_setup"] = needs_setup(self._config)
         self._send(SettingsEvent(settings=sanitized))
+
+    async def _handle_get_diagnostics(self) -> None:
+        self._send(DiagnosticsEvent(diagnostics=self._build_diagnostics()))
+
+    async def _handle_clear_conversation(self) -> None:
+        self._conversation.clear()
+        self._send(ConversationClearedEvent())
+        self._send_state("ready", "Conversation cleared.")
+
+    async def _handle_get_context_preview(self) -> None:
+        self._send(
+            ContextPreviewEvent(
+                clipboard_available=False,
+                clipboard_preview="",
+                active_window=None,
+            )
+        )
 
     async def _handle_update_settings(self) -> None:
         """Apply a partial settings patch from the frontend."""
@@ -404,6 +542,7 @@ class DesktopController:
     async def _handle_open_config_folder(self) -> None:
         """Open the config directory in the file manager."""
         from vox2ai.config import config_path
+
         cfg_dir = config_path().parent
         if cfg_dir.exists():
             import subprocess
@@ -419,17 +558,26 @@ class DesktopController:
         sanitized = sanitize_config(self._config)
         self._send(SettingsSavedEvent(settings=sanitized))
 
-    async def _process_user_prompt(self, prompt: str) -> None:
+    async def _process_user_prompt(
+        self,
+        prompt: str,
+        generation: int,
+        context: dict[str, Any] | None = None,
+    ) -> None:
         """Run the agent decision and answer/command flow for a prompt.
 
         Shared by voice (after STT) and typed text flows.
         """
+        self._append_conversation("user", prompt)
+        llm_prompt = self._build_prompt(prompt, context)
         loop = asyncio.get_running_loop()
-        decision = await loop.run_in_executor(None, _do_decision, self._llm_client, prompt)
+        decision = await loop.run_in_executor(None, _do_decision, self._llm_client, llm_prompt)
+        if generation != self._operation_generation:
+            return
         if isinstance(decision, Vox2AIError):
             self._error_out(str(decision))
             return
-        await self._handle_decision(decision)
+        await self._handle_decision(decision, generation)
 
     async def _handle_approve_command(self) -> None:
         if self._state != ServerState.APPROVAL_REQUIRED:
@@ -438,7 +586,7 @@ class DesktopController:
         if decision is None or decision.command is None:
             return
         self._pending_decision = None
-        await self._execute_command(decision)
+        await self._execute_command(decision, self._operation_generation)
 
     async def _handle_deny_command(self) -> None:
         if self._state != ServerState.APPROVAL_REQUIRED:
@@ -446,27 +594,49 @@ class DesktopController:
         self._pending_decision = None
         self._done_out()
 
-    async def _handle_decision(self, decision: AgentDecision) -> None:
+    async def _handle_decision(self, decision: AgentDecision, generation: int) -> None:
+        if generation != self._operation_generation:
+            return
+
         if decision.type == "command":
             cmd_config = self._config.commands
-            if cmd_config.mode == "disabled" or (
-                decision.command and is_blocked(decision.command, cmd_config)
-            ):
-                self._error_out(f"Command blocked by config: {decision.command}")
+            command_is_blocked = bool(decision.command and is_blocked(decision.command, cmd_config))
+            if cmd_config.mode == "disabled" or command_is_blocked:
+                reason = (
+                    "Command execution is disabled."
+                    if cmd_config.mode == "disabled"
+                    else "That command is blocked by config."
+                )
+                message = decision.message.strip()
+                command_note = f"I did not run `{decision.command}`. {reason}"
+                message = f"{message}\n\n{command_note}" if message else command_note
+
+                self._state = ServerState.STREAMING_ANSWER
+                self._send(AnswerStartEvent())
+                await self._stream_text(message, generation)
                 return
 
-            if requires_approval(decision.command or "", cmd_config):
+            risk = classify_command_risk(decision.command or "")
+            if requires_approval(decision.command or "", cmd_config) or risk == "high":
                 self._state = ServerState.APPROVAL_REQUIRED
                 self._pending_decision = decision
+                if decision.message or decision.command:
+                    self._append_conversation(
+                        "assistant",
+                        f"{decision.message}\nProposed command: {decision.command or ''}".strip(),
+                    )
                 self._send(
                     CommandApprovalEvent(
                         command=decision.command or "",
                         reason=decision.reason,
+                        working_directory=str(Path(cmd_config.working_directory).resolve()),
+                        risk=risk,
+                        expected_effect=describe_command_effect(decision.command or ""),
                     )
                 )
                 return
 
-            await self._execute_command(decision)
+            await self._execute_command(decision, generation)
             return
 
         self._state = ServerState.STREAMING_ANSWER
@@ -475,13 +645,15 @@ class DesktopController:
         message = decision.message
         if not message:
             self._send(AnswerDoneEvent())
-            self._done_out()
+            self._done_out(generation)
             return
 
-        await self._stream_text(message)
+        await self._stream_text(message, generation)
 
-    async def _execute_command(self, decision: AgentDecision) -> None:
+    async def _execute_command(self, decision: AgentDecision, generation: int) -> None:
         if decision.command is None:
+            return
+        if generation != self._operation_generation:
             return
 
         self._state = ServerState.RUNNING_COMMAND
@@ -492,6 +664,8 @@ class DesktopController:
         result = await loop.run_in_executor(None, _do_run_command, decision.command, self._config)
 
         self._timer.stop("command")
+        if generation != self._operation_generation:
+            return
 
         if isinstance(result, Vox2AIError):
             self._error_out(str(result))
@@ -505,6 +679,10 @@ class DesktopController:
                 stderr=result.stderr,
             )
         )
+        self._append_conversation(
+            "assistant",
+            _summarize_command_result(result),
+        )
 
         self._state = ServerState.THINKING
         self._send_state("thinking", "Thinking...")
@@ -512,6 +690,8 @@ class DesktopController:
         explanation = await loop.run_in_executor(
             None, _do_command_explanation, self._llm_client, decision, result
         )
+        if generation != self._operation_generation:
+            return
 
         if isinstance(explanation, Vox2AIError):
             self._error_out(str(explanation))
@@ -519,17 +699,24 @@ class DesktopController:
 
         self._state = ServerState.STREAMING_ANSWER
         self._send(AnswerStartEvent())
-        await self._stream_text(explanation)
+        await self._stream_text(explanation, generation)
 
-    async def _stream_text(self, text: str) -> None:
+    async def _stream_text(self, text: str, generation: int) -> None:
         chunk_size = 60
         for i in range(0, len(text), chunk_size):
+            if generation != self._operation_generation:
+                return
             self._send(AnswerDeltaEvent(text=text[i : i + chunk_size]))
             await asyncio.sleep(0.015)
+        if generation != self._operation_generation:
+            return
         self._send(AnswerDoneEvent())
-        self._done_out()
+        self._append_conversation("assistant", text)
+        self._done_out(generation)
 
-    def _done_out(self) -> None:
+    def _done_out(self, generation: int | None = None) -> None:
+        if generation is not None and generation != self._operation_generation:
+            return
         self._state = ServerState.READY
         self._send_state("ready", "Ready")
         if self._config.debug.show_timings:
@@ -541,6 +728,53 @@ class DesktopController:
         self._state = ServerState.ERROR
         self._send(ErrorEvent(message=message))
         self._send_state("ready", "Ready")
+
+
+def _format_prompt_context(context: dict[str, Any], max_clipboard_chars: int) -> str:
+    """Format explicit frontend context for the LLM without logging it."""
+    parts: list[str] = []
+    clipboard = context.get("clipboard")
+    if isinstance(clipboard, str) and clipboard.strip():
+        text = clipboard.strip()
+        truncated = len(text) > max_clipboard_chars
+        text = text[:max_clipboard_chars]
+        suffix = "\n[clipboard truncated]" if truncated else ""
+        parts.append(f"Clipboard context:\n{text}{suffix}")
+
+    active_window = context.get("active_window")
+    if isinstance(active_window, dict):
+        app = str(active_window.get("app") or "").strip()
+        title = str(active_window.get("title") or "").strip()
+        if app or title:
+            parts.append(
+                f"Active window context:\napp: {app or 'unknown'}\ntitle: {title or 'unknown'}"
+            )
+
+    return "\n\n".join(parts)
+
+
+def _check_microphone_available() -> tuple[bool, str]:
+    try:
+        import sounddevice as sd
+
+        devices = sd.query_devices()
+        inputs = [d for d in devices if isinstance(d, dict) and d.get("max_input_channels", 0) > 0]
+        if not inputs:
+            return False, "No input devices found."
+        return True, f"{len(inputs)} input device(s) available."
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _summarize_command_result(result: CommandResult) -> str:
+    stdout = result.stdout.strip().splitlines()
+    stderr = result.stderr.strip().splitlines()
+    details: list[str] = [f"Command `{result.command}` exited with {result.exit_code}."]
+    if stdout:
+        details.append("stdout: " + stdout[0][:240])
+    if stderr:
+        details.append("stderr: " + stderr[0][:240])
+    return "\n".join(details)
 
 
 # ── Sync workers ───────────────────────────────────────────────
@@ -678,6 +912,7 @@ class DesktopServer:
 
         self._controller.set_broadcast(_broadcast, loop)
         self._controller._send(HelloEvent())
+        self._controller._send(BackendStatusEvent(status="connected", message="Ready"))
         self._controller._send_state("ready", "Ready")
 
         try:
@@ -751,6 +986,11 @@ def _apply_settings_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig
             if hasattr(updated.voice, k):
                 setattr(updated.voice, k, v)
 
+    if "recording" in patch:
+        for k, v in patch["recording"].items():
+            if hasattr(updated.recording, k):
+                setattr(updated.recording, k, v)
+
     if "transcription" in patch:
         t = patch["transcription"]
         if isinstance(t, dict):
@@ -767,6 +1007,31 @@ def _apply_settings_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig
             if hasattr(updated.commands, k):
                 setattr(updated.commands, k, v)
 
+    if "general" in patch:
+        for k, v in patch["general"].items():
+            if hasattr(updated.general, k):
+                setattr(updated.general, k, v)
+
+    if "onboarding" in patch:
+        for k, v in patch["onboarding"].items():
+            if hasattr(updated.onboarding, k):
+                setattr(updated.onboarding, k, v)
+
+    if "conversation" in patch:
+        for k, v in patch["conversation"].items():
+            if hasattr(updated.conversation, k):
+                setattr(updated.conversation, k, v)
+
+    if "context" in patch:
+        for k, v in patch["context"].items():
+            if hasattr(updated.context, k):
+                setattr(updated.context, k, v)
+
+    if "quick_actions" in patch:
+        for k, v in patch["quick_actions"].items():
+            if hasattr(updated.quick_actions, k):
+                setattr(updated.quick_actions, k, v)
+
     if "desktop_window" in patch:
         for k, v in patch["desktop_window"].items():
             if hasattr(updated.desktop_window, k):
@@ -777,7 +1042,7 @@ def _apply_settings_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig
             if hasattr(updated.debug, k):
                 setattr(updated.debug, k, v)
 
-    return updated
+    return AppConfig.model_validate(updated.model_dump())
 
 
 def launch_frontend() -> None:

@@ -10,6 +10,7 @@ from vox2ai.config import (
     CommandsConfig,
     OverlayConfig,
     PartialTranscriptionConfig,
+    RecordingConfig,
     VoiceConfig,
     config_path,
     ensure_config,
@@ -36,6 +37,15 @@ def test_default_config_creation() -> None:
     assert "[performance]" in content
     assert "[debug]" in content
     assert "[commands]" in content
+    assert "[recording]" in content
+    assert 'activation_mode = "hold-to-talk"' in content
+    assert 'shortcut = "Ctrl"' in content
+    assert "[general]" in content
+    assert "[onboarding]" in content
+    assert "[conversation]" in content
+    assert "[context]" in content
+    assert "[quick_actions]" in content
+    assert "[desktop_window]" in content
     assert "[transcription.partial]" in content
 
 
@@ -126,6 +136,17 @@ def test_app_config_defaults() -> None:
     assert cfg.overlay.inactive_opacity < cfg.overlay.active_opacity
     assert cfg.overlay.fade_after_seconds == 6
     assert cfg.voice.whisper_model == "small"
+    assert cfg.recording.activation_mode == "hold-to-talk"
+    assert cfg.recording.shortcut == "Ctrl"
+    assert cfg.desktop_window.user_resizable is True
+    assert cfg.desktop_window.remember_size is True
+    assert cfg.desktop_window.manual_size is False
+    assert cfg.general.minimize_to_tray is True
+    assert cfg.onboarding.completed is False
+    assert cfg.conversation.enabled is True
+    assert cfg.context.clipboard_enabled is True
+    assert cfg.quick_actions.enabled is True
+    assert cfg.commands.show_risk_level is True
     assert cfg.performance.preload_whisper is True
     assert cfg.debug.show_timings is False
     assert cfg.transcription.refine is True
@@ -169,6 +190,19 @@ def test_activation_backend_validation() -> None:
     ActivationConfig(backend="evdev")
     with pytest.raises(ValidationError):
         ActivationConfig(backend="x11")
+
+
+def test_recording_config_defaults_and_validation() -> None:
+    cfg = RecordingConfig()
+    assert cfg.activation_mode == "hold-to-talk"
+    assert cfg.shortcut == "Ctrl"
+    RecordingConfig(activation_mode="toggle-to-talk", shortcut="Ctrl+Space")
+    with pytest.raises(ValidationError):
+        RecordingConfig(activation_mode="press-and-hold")
+    with pytest.raises(ValidationError):
+        RecordingConfig(shortcut="")
+    with pytest.raises(ValidationError):
+        RecordingConfig(shortcut="Escape")
 
 
 def test_overlay_opacity_validation() -> None:

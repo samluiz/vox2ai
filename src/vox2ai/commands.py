@@ -1,9 +1,12 @@
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from vox2ai.config import CommandsConfig
 from vox2ai.errors import CommandExecutionError
+
+CommandRisk = Literal["low", "medium", "high"]
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,72 @@ def requires_approval(_command: str, config: CommandsConfig) -> bool:
     if config.mode == "disabled":
         return False
     return config.mode != "allow-all"
+
+
+def classify_command_risk(command: str) -> CommandRisk:
+    """Classify shell command risk for approval UI."""
+    cmd = command.strip().lower()
+    high_markers = [
+        "rm -rf",
+        "rm -r",
+        "mkfs",
+        "dd ",
+        "shutdown",
+        "reboot",
+        "docker compose down -v",
+        "docker system prune",
+        "chmod -r",
+        "chown -r",
+        "drop database",
+        "truncate table",
+    ]
+    if any(marker in cmd for marker in high_markers):
+        return "high"
+
+    medium_markers = [
+        "sudo ",
+        "dnf install",
+        "dnf upgrade",
+        "apt install",
+        "apt upgrade",
+        "pacman -s",
+        "npm install",
+        "pip install",
+        "git ",
+        "mv ",
+        "cp ",
+        "chmod ",
+        "chown ",
+        "sed -i",
+        ">",
+    ]
+    if any(marker in cmd for marker in medium_markers):
+        return "medium"
+
+    return "low"
+
+
+def describe_command_effect(command: str) -> str:
+    """Return a concise expected-effect description for command approval."""
+    cmd = command.strip()
+    lower = cmd.lower()
+    if lower.startswith("ls"):
+        return "Lists files or directories."
+    if lower == "pwd" or lower.startswith("pwd "):
+        return "Prints the current working directory."
+    if lower.startswith("cat "):
+        return "Prints file contents."
+    if "dnf upgrade" in lower or "apt upgrade" in lower:
+        return "Updates installed system packages."
+    if "dnf install" in lower or "apt install" in lower or "pacman -s" in lower:
+        return "Installs packages on the system."
+    if lower.startswith("git "):
+        return "Runs a Git operation in the working directory."
+    if lower.startswith("docker compose down -v"):
+        return "Stops containers and deletes associated volumes."
+    if "rm " in lower:
+        return "Deletes files or directories."
+    return "Runs the proposed shell command in the configured working directory."
 
 
 def run_command(

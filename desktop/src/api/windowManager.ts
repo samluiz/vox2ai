@@ -9,11 +9,27 @@ import {
 
 export type WindowMode = string;
 
+export const WINDOW_SIZE_LIMITS = {
+  minWidth: 360,
+  minHeight: 136,
+  defaultWidth: 520,
+  defaultHeight: 160,
+  maxWidth: 900,
+  maxHeight: 720,
+};
+
+export const LARGE_OVERLAY_SIZE = {
+  width: 900,
+  height: 680,
+  minWidth: 760,
+  minHeight: 520,
+};
+
 export const WINDOW_PADDING = 10;
-export const MIN_CARD_WIDTH = 360;
-export const PREFERRED_CARD_WIDTH = 520;
-export const MAX_CARD_WIDTH = 680;
-export const MIN_CARD_HEIGHT = 64;
+export const MIN_CARD_WIDTH = WINDOW_SIZE_LIMITS.minWidth - WINDOW_PADDING * 2;
+export const PREFERRED_CARD_WIDTH = WINDOW_SIZE_LIMITS.defaultWidth - WINDOW_PADDING * 2;
+export const MAX_CARD_WIDTH = WINDOW_SIZE_LIMITS.maxWidth - WINDOW_PADDING * 2;
+export const MIN_CARD_HEIGHT = WINDOW_SIZE_LIMITS.minHeight - WINDOW_PADDING * 2;
 export const WINDOW_TOP_MARGIN = 24;
 export const WINDOW_BOTTOM_MARGIN = 48;
 
@@ -58,12 +74,17 @@ export function deriveWindowMode(
 
 export function cardSizeForModeCompact(mode: string): { width: number; height: number } | null {
   const COMPACT: Record<string, { width: number; height: number }> = {
-    ready: { width: 360, height: 52 },
-    readyWithInput: { width: 420, height: 76 },
-    listening: { width: 360, height: 72 },
-    listeningWithPartial: { width: 420, height: 92 },
-    transcribing: { width: 360, height: 64 },
-    thinking: { width: 420, height: 72 },
+    ready: {
+      width: WINDOW_SIZE_LIMITS.minWidth - WINDOW_PADDING * 2,
+      height: WINDOW_SIZE_LIMITS.minHeight - WINDOW_PADDING * 2,
+    },
+    readyWithInput: {
+      width: WINDOW_SIZE_LIMITS.minWidth - WINDOW_PADDING * 2,
+      height: WINDOW_SIZE_LIMITS.minHeight - WINDOW_PADDING * 2,
+    },
+    listening: { width: 400, height: 88 },
+    listeningWithPartial: { width: 460, height: 112 },
+    transcribing: { width: 400, height: 58 },
   };
   return COMPACT[mode] ?? null;
 }
@@ -87,7 +108,11 @@ export async function computeWindowSize(
   const scaleFactor = monitor.scaleFactor;
   const monitorLogicalHeight = monitor.size.height / scaleFactor;
 
-  const maxHeight = monitorLogicalHeight - WINDOW_TOP_MARGIN - WINDOW_BOTTOM_MARGIN;
+  const maxTotalHeight = Math.min(
+    WINDOW_SIZE_LIMITS.maxHeight,
+    monitorLogicalHeight - WINDOW_TOP_MARGIN - WINDOW_BOTTOM_MARGIN
+  );
+  const maxHeight = Math.max(MIN_CARD_HEIGHT, maxTotalHeight - WINDOW_PADDING * 2);
   const totalWidth = clamp(cardWidth, MIN_CARD_WIDTH, MAX_CARD_WIDTH) + WINDOW_PADDING * 2;
   const targetCardH = clamp(cardHeight, MIN_CARD_HEIGHT, maxHeight);
   const totalHeight = targetCardH + WINDOW_PADDING * 2;
@@ -129,6 +154,27 @@ export async function setWindowSizeAndPosition(width: number, height: number): P
 }
 
 /**
+ * Make settings/onboarding/diagnostics feel like real desktop panels instead
+ * of inheriting the compact OSD widget constraints.
+ */
+export async function setLargeOverlayWindow(): Promise<void> {
+  try {
+    const win = getCurrentWindow();
+    await win.setResizable(true);
+    await win.setMinSize(
+      new LogicalSize(LARGE_OVERLAY_SIZE.minWidth, LARGE_OVERLAY_SIZE.minHeight)
+    );
+    await win.setMaxSize(
+      new LogicalSize(WINDOW_SIZE_LIMITS.maxWidth, WINDOW_SIZE_LIMITS.maxHeight)
+    );
+  } catch (err) {
+    log("setLargeOverlayWindow constraints failed", err);
+  }
+
+  await setWindowSizeAndPosition(LARGE_OVERLAY_SIZE.width, LARGE_OVERLAY_SIZE.height);
+}
+
+/**
  * Best-effort always-on-top.
  */
 export async function applyAlwaysOnTop(): Promise<void> {
@@ -158,10 +204,10 @@ export async function applyFocus(): Promise<void> {
  * Initialize the window on startup.
  */
 export async function initializeWindow(): Promise<void> {
-  const size = await computeWindowSize(MIN_CARD_WIDTH, MIN_CARD_HEIGHT);
-  if (size) {
-    await setWindowSizeAndPosition(size.totalWidth, size.totalHeight);
-  }
+  await setWindowSizeAndPosition(
+    WINDOW_SIZE_LIMITS.minWidth,
+    WINDOW_SIZE_LIMITS.minHeight
+  );
   await applyAlwaysOnTop();
   await applyFocus();
 }

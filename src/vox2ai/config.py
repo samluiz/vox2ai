@@ -37,6 +37,10 @@ backend = "window"
 key = "KEY_RIGHTCTRL"
 fallback_key = "KEY_RIGHTCTRL"
 
+[recording]
+activation_mode = "hold-to-talk"
+shortcut = "Ctrl"
+
 [transcription]
 mode = "local-partial"
 show_partial = true
@@ -71,6 +75,7 @@ mode = "ask-before-run"
 timeout_seconds = 30
 max_output_chars = 12000
 working_directory = "."
+show_risk_level = true
 blocked_patterns = [
   "rm ",
   "rm -",
@@ -99,6 +104,41 @@ theme = "dark"
 enabled = false
 backend = "none"
 voice = ""
+
+[general]
+minimize_to_tray = true
+start_hidden = false
+launch_at_login = false
+
+[onboarding]
+completed = false
+
+[conversation]
+enabled = true
+max_messages = 10
+
+[context]
+clipboard_enabled = true
+clipboard_auto_detect = true
+max_clipboard_chars = 8000
+active_window_enabled = true
+selected_text_enabled = false
+
+[quick_actions]
+enabled = true
+
+[desktop_window]
+user_resizable = true
+remember_size = true
+manual_size = false
+width = 520
+height = 160
+position = "top-center"
+always_on_top = true
+transparent = true
+inactive_opacity = 0.08
+active_opacity = 0.98
+fade_after_seconds = 8
 
 [debug]
 enabled = false
@@ -295,6 +335,29 @@ class ActivationConfig(BaseModel):
         return v
 
 
+class RecordingConfig(BaseModel):
+    activation_mode: str = "hold-to-talk"
+    shortcut: str = "Ctrl"
+
+    @field_validator("activation_mode")
+    @classmethod
+    def validate_activation_mode(cls, v: str) -> str:
+        allowed = {"hold-to-talk", "toggle-to-talk"}
+        if v not in allowed:
+            raise ValueError(f"recording.activation_mode must be one of {allowed}")
+        return v
+
+    @field_validator("shortcut")
+    @classmethod
+    def validate_shortcut(cls, v: str) -> str:
+        shortcut = v.strip()
+        if not shortcut:
+            raise ValueError("recording.shortcut must not be empty")
+        if shortcut.lower() in {"escape", "esc"}:
+            raise ValueError("Escape is reserved for cancel")
+        return shortcut
+
+
 class OverlayConfig(BaseModel):
     enabled: bool = True
     position: str = "top-center"
@@ -333,6 +396,7 @@ class CommandsConfig(BaseModel):
     timeout_seconds: int = 30
     max_output_chars: int = 12000
     working_directory: str = "."
+    show_risk_level: bool = True
     blocked_patterns: list[str] = [
         "rm ",
         "rm -",
@@ -374,6 +438,47 @@ class TTSConfig(BaseModel):
     voice: str = ""
 
 
+class GeneralConfig(BaseModel):
+    minimize_to_tray: bool = True
+    start_hidden: bool = False
+    launch_at_login: bool = False
+
+
+class OnboardingConfig(BaseModel):
+    completed: bool = False
+
+
+class ConversationConfig(BaseModel):
+    enabled: bool = True
+    max_messages: int = 10
+
+    @field_validator("max_messages")
+    @classmethod
+    def validate_max_messages(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("conversation.max_messages must be positive")
+        return v
+
+
+class ContextConfig(BaseModel):
+    clipboard_enabled: bool = True
+    clipboard_auto_detect: bool = True
+    max_clipboard_chars: int = 8000
+    active_window_enabled: bool = True
+    selected_text_enabled: bool = False
+
+    @field_validator("max_clipboard_chars")
+    @classmethod
+    def validate_max_clipboard_chars(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("context.max_clipboard_chars must be positive")
+        return v
+
+
+class QuickActionsConfig(BaseModel):
+    enabled: bool = True
+
+
 class DesktopConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8765
@@ -381,8 +486,11 @@ class DesktopConfig(BaseModel):
 
 
 class DesktopWindowConfig(BaseModel):
-    width: int = 720
-    height: int = 180
+    user_resizable: bool = True
+    remember_size: bool = True
+    manual_size: bool = False
+    width: int = 520
+    height: int = 160
     position: str = "top-center"
     always_on_top: bool = True
     transparent: bool = True
@@ -401,6 +509,7 @@ class AppConfig(BaseModel):
     assistant: AssistantConfig = Field(default_factory=AssistantConfig)
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     activation: ActivationConfig = Field(default_factory=ActivationConfig)
+    recording: RecordingConfig = Field(default_factory=RecordingConfig)
     transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
     overlay: OverlayConfig = Field(default_factory=OverlayConfig)
     commands: CommandsConfig = Field(default_factory=CommandsConfig)
@@ -409,6 +518,11 @@ class AppConfig(BaseModel):
     desktop_window: DesktopWindowConfig = Field(default_factory=DesktopWindowConfig)
     tui: TUIConfig = Field(default_factory=TUIConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
+    general: GeneralConfig = Field(default_factory=GeneralConfig)
+    onboarding: OnboardingConfig = Field(default_factory=OnboardingConfig)
+    conversation: ConversationConfig = Field(default_factory=ConversationConfig)
+    context: ContextConfig = Field(default_factory=ContextConfig)
+    quick_actions: QuickActionsConfig = Field(default_factory=QuickActionsConfig)
     debug: DebugConfig = Field(default_factory=DebugConfig)
 
     model_config = {"extra": "ignore"}

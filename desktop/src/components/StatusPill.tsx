@@ -1,4 +1,5 @@
 import React from "react";
+import type { BackendConnectionState } from "../api/websocket";
 
 interface StatusPillProps {
   isListening?: boolean;
@@ -7,6 +8,9 @@ interface StatusPillProps {
   isStreaming?: boolean;
   isApproval?: boolean;
   isError?: boolean;
+  needsSetup?: boolean;
+  connectionState?: BackendConnectionState;
+  isBackendConnected?: boolean;
 }
 
 const StatusPill: React.FC<StatusPillProps> = ({
@@ -16,35 +20,52 @@ const StatusPill: React.FC<StatusPillProps> = ({
   isStreaming,
   isApproval,
   isError,
+  needsSetup,
+  connectionState = "connected",
+  isBackendConnected = true,
 }) => {
-  let icon: string | null = null;
-  let modifier = "";
+  let label = "Ready";
+  let modifier = "ready";
 
-  if (isError) {
-    icon = "✕";
+  if (!isBackendConnected) {
+    if (connectionState === "starting" || connectionState === "connecting") {
+      label = "Connecting";
+      modifier = "connecting";
+    } else if (connectionState === "reconnecting") {
+      label = "Reconnecting";
+      modifier = "connecting";
+    } else {
+      label = "Disconnected";
+      modifier = "disconnected";
+    }
+  } else if (isError) {
+    label = "Error";
     modifier = "error";
   } else if (isApproval) {
-    icon = "!";
+    label = "Approval needed";
     modifier = "approval";
   } else if (isStreaming) {
-    icon = "▸";
+    label = "Answering";
     modifier = "streaming";
   } else if (isThinking) {
-    icon = "⟳";
+    label = "Thinking";
     modifier = "thinking";
   } else if (isTranscribing) {
-    icon = "⋯";
+    label = "Transcribing";
     modifier = "transcribing";
   } else if (isListening) {
-    icon = "●";
+    label = "Listening";
     modifier = "listening";
-  } else {
-    icon = "●";
-    modifier = "ready";
+  } else if (needsSetup) {
+    label = "Needs setup";
+    modifier = "setup";
   }
 
   return (
-    <span className={`status-pill status-pill--${modifier}`}>{icon}</span>
+    <span className={`status-pill status-pill--${modifier}`}>
+      <span className="status-dot" aria-hidden="true" />
+      <span>{label}</span>
+    </span>
   );
 };
 

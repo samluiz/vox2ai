@@ -32,9 +32,23 @@ export function useAutoResizeWindow({
   isStreaming,
   enabled = true,
 }: UseAutoResizeWindowOptions): void {
+  const enabledRef = useRef(enabled);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const observerRef = useRef<ResizeObserver | null>(null);
+  const mutationObserverRef = useRef<MutationObserver | null>(null);
   const lastSizeRef = useRef<{ w: number; h: number } | null>(null);
+
+  useEffect(() => {
+    enabledRef.current = enabled;
+    if (!enabled) {
+      observerRef.current?.disconnect();
+      mutationObserverRef.current?.disconnect();
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+      }
+    }
+  }, [enabled]);
 
   const doResize = useCallback(() => {
     if (!enabled) return;
@@ -43,7 +57,16 @@ export function useAutoResizeWindow({
     const card = cardRef.current;
 
     requestAnimationFrame(async () => {
+      if (!enabledRef.current) return;
+      if (!cardRef.current || cardRef.current !== card) return;
+
       const compact = cardSizeForModeCompact(mode);
+      const messages = card.querySelector<HTMLElement>(".messages");
+
+      if (messages) {
+        messages.style.maxHeight = "";
+        messages.style.overflowY = "";
+      }
 
       let cardW: number;
       let cardH: number;
@@ -63,6 +86,36 @@ export function useAutoResizeWindow({
       const w = size.totalWidth;
       const h = size.totalHeight;
 
+      // When the message stack exceeds available monitor height, enable internal scroll.
+      const needsScroll = compact === null && cardH > size.maxHeight;
+      if (messages) {
+        if (needsScroll) {
+          const header = card.querySelector<HTMLElement>(".widget-header");
+          const input = card.querySelector<HTMLElement>(".prompt-shell");
+          const waveform = card.querySelector<HTMLElement>(".waveform");
+          const partial = card.querySelector<HTMLElement>(".partial-transcript");
+          const idle = card.querySelector<HTMLElement>(".idle-copy");
+          const cardStyle = getComputedStyle(card);
+          const verticalPadding =
+            (Number.parseFloat(cardStyle.paddingTop) || 0) +
+            (Number.parseFloat(cardStyle.paddingBottom) || 0);
+          const fixedContentHeight =
+            verticalPadding +
+            (header?.offsetHeight ?? 20) +
+            (input?.offsetHeight ?? 0) +
+            (waveform?.offsetHeight ?? 0) +
+            (partial?.offsetHeight ?? 0) +
+            (idle?.offsetHeight ?? 0) +
+            28;
+          const availableForMessages = size.maxHeight - fixedContentHeight;
+          messages.style.maxHeight = `${Math.max(availableForMessages, 72)}px`;
+          messages.style.overflowY = "auto";
+        } else {
+          messages.style.maxHeight = "";
+          messages.style.overflowY = "";
+        }
+      }
+
       // Skip if size hasn't changed (avoid redundant setSize calls).
       if (lastSizeRef.current && lastSizeRef.current.w === w && lastSizeRef.current.h === h) {
         return;
@@ -70,31 +123,8 @@ export function useAutoResizeWindow({
       lastSizeRef.current = { w, h };
 
       await setWindowSizeAndPosition(w, h);
-
-      // When the answer area exceeds available monitor height, enable internal scroll.
-      const needsScroll = compact === null && cardH > size.maxHeight;
-      const answerView = card.querySelector<HTMLElement>(".answer-view");
-      if (answerView) {
-        if (needsScroll) {
-          const header = card.querySelector<HTMLElement>(".widget-header");
-          const input = card.querySelector<HTMLElement>(".prompt-input");
-          const tv = card.querySelector<HTMLElement>(".transcript-view");
-          const availableForAnswer =
-            size.maxHeight -
-            WINDOW_PADDING * 2 -
-            (header?.offsetHeight ?? 20) -
-            (input?.offsetHeight ?? 0) -
-            (tv?.offsetHeight ?? 0) -
-            6;
-          answerView.style.maxHeight = `${Math.max(availableForAnswer, 48)}px`;
-          answerView.style.overflowY = "auto";
-        } else {
-          answerView.style.maxHeight = "";
-          answerView.style.overflowY = "";
-        }
-      }
     });
-  }, [cardRef, mode]);
+  }, [cardRef, enabled, mode]);
 
   // Debounced resize for streaming.
   const scheduleResize = useCallback(() => {
@@ -113,12 +143,13 @@ export function useAutoResizeWindow({
     }
   }, [isStreaming, doResize]);
 
-  // ResizeObserver on the card element.
+  // ResizeObserver for layout changes plus MutationObserver for streaming text growth.
   useEffect(() => {
     const card = cardRef.current;
     if (!card) return;
 
     observerRef.current?.disconnect();
+    mutationObserverRef.current?.disconnect();
 
     observerRef.current = new ResizeObserver(() => {
       scheduleResize();
@@ -126,8 +157,21 @@ export function useAutoResizeWindow({
 
     observerRef.current.observe(card);
 
+    mutationObserverRef.current = new MutationObserver(() => {
+      scheduleResize();
+    });
+    mutationObserverRef.current.observe(card, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+
+    lastSizeRef.current = null;
+    scheduleResize();
+
     return () => {
       observerRef.current?.disconnect();
+      mutationObserverRef.current?.disconnect();
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, [cardRef, scheduleResize]);
