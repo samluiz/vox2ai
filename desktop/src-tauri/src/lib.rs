@@ -37,13 +37,13 @@ pub struct SidecarInner {
     last_error: Option<String>,
 }
 
-struct ActivationInner {
+pub struct ActivationInner {
     shortcut: Option<String>,
     behavior: String,
     registration_error: Option<String>,
 }
 
-struct WindowRuntimeInner {
+pub struct WindowRuntimeInner {
     minimize_to_tray: bool,
 }
 
