@@ -100,6 +100,31 @@ fn resolve_vox2aictl_path(app: &AppHandle) -> Result<PathBuf, String> {
     Err("vox2aictl command not found".to_string())
 }
 
+// ── Single-instance: summon existing ─────────────────────────
+
+fn try_summon_existing() -> Result<(), String> {
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let socket_path = runtime_dir.join("vox2ai").join("control.sock");
+
+    let stream = UnixStream::connect(&socket_path).map_err(|e| format!("{e}"))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2))).ok();
+    stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+    let ws = stream.try_clone().map_err(|e| format!("{e}"))?;
+    let mut reader = BufReader::new(&stream);
+    let mut writer = ws;
+
+    let cmd = serde_json::json!({"type": "summon", "behavior": "show_widget"});
+    let json = serde_json::to_string(&cmd).unwrap_or_default();
+    writeln!(&mut writer, "{json}").ok();
+    let _ = writer.flush();
+
+    let mut resp = String::new();
+    reader.read_line(&mut resp).ok();
+    Ok(())
+}
+
 // ── Main ─────────────────────────────────────────────────────
 
 fn main() {
@@ -109,6 +134,11 @@ fn main() {
         let sub = &args[2];
         let sub_args: Vec<&str> = args[3..].iter().map(|s| s.as_str()).collect();
         std::process::exit(vox2aictl_proxy(sub, &sub_args));
+    }
+
+    // If another instance is already running, summon it and exit.
+    if try_summon_existing().is_ok() {
+        return;
     }
 
     tauri::Builder::default()
@@ -261,8 +291,13 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
+                let session = detection::detect_session();
+                if detection::is_session_wayland(&session) {
+                    // On Wayland there's no tray to reopen from, so quit.
+                } else {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .run(tauri::generate_context!())
