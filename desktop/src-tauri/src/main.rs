@@ -6,6 +6,7 @@ use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_global_shortcut::{ShortcutState};
 
 // ── Re-export lib types ──────────────────────────────────────
 pub use vox2ai_desktop_lib::activation_backend;
@@ -111,6 +112,19 @@ fn main() {
     }
 
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state == ShortcutState::Pressed {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                        let _ = app.emit("tray_start_recording", ());
+                    }
+                })
+                .build(),
+        )
         .manage(())
         .invoke_handler(tauri::generate_handler![
             get_desktop_session,
@@ -123,43 +137,75 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
 
-            // Control server
+            // Control server — receives commands from vox2aictl
             let handler = Arc::new(move |cmd: control_protocol::ControlCommand| {
-                let res = control_protocol::ControlResponse::error("not implemented");
-                if let Some(w) = handle.get_webview_window("main") {
-                    match &cmd {
-                        control_protocol::ControlCommand::Summon { behavior, .. } => {
-                            use control_protocol::SummonBehavior;
-                            match behavior {
-                                SummonBehavior::ShowWidget => {
-                                    let _ = w.show(); let _ = w.set_focus();
-                                }
-                                SummonBehavior::ShowAndRecord => {
-                                    let _ = w.show(); let _ = w.set_focus();
-                                    let _ = handle.emit("tray_start_recording", ());
-                                }
-                                SummonBehavior::ShowAndFocusInput => {
-                                    let _ = w.show(); let _ = w.set_focus();
-                                    let _ = handle.emit("control_focus_input", ());
-                                }
-                                SummonBehavior::ToggleWidget => {
-                                    let vis = w.is_visible().unwrap_or(false);
-                                    if vis { let _ = w.hide(); } else { let _ = w.show(); let _ = w.set_focus(); }
-                                }
-                            }
+                use control_protocol::ControlCommand as Cmd;
+                use control_protocol::SummonBehavior;
+                let window = handle.get_webview_window("main");
+                match cmd {
+                    Cmd::Summon { behavior: SummonBehavior::ShowWidget, .. } => {
+                        if let Some(ref w) = window { let _ = w.show(); let _ = w.set_focus(); }
+                        control_protocol::ControlResponse::ok("shown")
+                    }
+                    Cmd::Summon { behavior: SummonBehavior::ShowAndRecord, .. } => {
+                        if let Some(ref w) = window { let _ = w.show(); let _ = w.set_focus(); }
+                        let _ = handle.emit("tray_start_recording", ());
+                        control_protocol::ControlResponse::ok("summoned and recording")
+                    }
+                    Cmd::Summon { behavior: SummonBehavior::ShowAndFocusInput, .. } => {
+                        if let Some(ref w) = window { let _ = w.show(); let _ = w.set_focus(); }
+                        let _ = handle.emit("control_focus_input", ());
+                        control_protocol::ControlResponse::ok("summoned and focused input")
+                    }
+                    Cmd::Summon { behavior: SummonBehavior::ToggleWidget, .. } => {
+                        if let Some(ref w) = window {
+                            let vis = w.is_visible().unwrap_or(false);
+                            if vis { let _ = w.hide(); } else { let _ = w.show(); let _ = w.set_focus(); }
                         }
-                        control_protocol::ControlCommand::OpenSettings { .. } => {
-                            let _ = w.show(); let _ = w.set_focus();
-                            let _ = handle.emit("tray_open_settings", ());
-                        }
-                        control_protocol::ControlCommand::OpenDiagnostics { .. } => {
-                            let _ = w.show(); let _ = w.set_focus();
-                            let _ = handle.emit("tray_open_diagnostics", ());
-                        }
-                        _ => {}
+                        control_protocol::ControlResponse::ok("toggled")
+                    }
+                    Cmd::OpenSettings { .. } => {
+                        if let Some(ref w) = window { let _ = w.show(); let _ = w.set_focus(); }
+                        let _ = handle.emit("tray_open_settings", ());
+                        control_protocol::ControlResponse::ok("opened settings")
+                    }
+                    Cmd::OpenDiagnostics { .. } => {
+                        if let Some(ref w) = window { let _ = w.show(); let _ = w.set_focus(); }
+                        let _ = handle.emit("tray_open_diagnostics", ());
+                        control_protocol::ControlResponse::ok("opened diagnostics")
+                    }
+                    Cmd::StartRecording { .. } => {
+                        let _ = handle.emit("tray_start_recording", ());
+                        control_protocol::ControlResponse::ok("recording")
+                    }
+                    Cmd::StopRecording { .. } => {
+                        let _ = handle.emit("control_stop_recording", ());
+                        control_protocol::ControlResponse::ok("stopped")
+                    }
+                    Cmd::Cancel { .. } => {
+                        let _ = handle.emit("control_cancel", ());
+                        control_protocol::ControlResponse::ok("cancelled")
+                    }
+                    Cmd::RestartBackend { .. } => {
+                        let _ = handle.emit("backend_restarting", ());
+                        control_protocol::ControlResponse::ok("restarting backend")
+                    }
+                    Cmd::Status { .. } => {
+                        let backend_state = "running";
+                        let connected = true;
+                        let visible = window.and_then(|w| w.is_visible().ok()).unwrap_or(false);
+                        control_protocol::ControlResponse::status(
+                            control_protocol::AppStatusPayload {
+                                app: "running".to_string(),
+                                backend: backend_state.to_string(),
+                                connected,
+                                recording: false,
+                                visible,
+                                activation_backend: "direct".to_string(),
+                            },
+                        )
                     }
                 }
-                res
             });
             let server = control_server::ControlServer::new("vox2ai");
             let _ = server.clean_stale_socket();
@@ -212,6 +258,12 @@ fn main() {
             } // if !is_wayland
 
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
