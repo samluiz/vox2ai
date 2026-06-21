@@ -36,6 +36,7 @@ const DiagnosticsWindow: React.FC<DiagnosticsWindowProps> = ({
   const provider = record(diagnostics?.provider);
   const microphone = record(diagnostics?.microphone);
   const shortcut = record(diagnostics?.shortcut);
+  const activation = record(diagnostics?.activation);
   const transcription = record(diagnostics?.transcription);
   const paths = record(diagnostics?.paths);
   const app = record(diagnostics?.app);
@@ -49,6 +50,7 @@ const DiagnosticsWindow: React.FC<DiagnosticsWindowProps> = ({
           provider,
           microphone,
           shortcut,
+          activation,
           transcription,
           paths,
           app,
@@ -66,6 +68,7 @@ const DiagnosticsWindow: React.FC<DiagnosticsWindowProps> = ({
       paths,
       provider,
       shortcut,
+      activation,
       transcription,
     ]
   );
@@ -78,6 +81,7 @@ const DiagnosticsWindow: React.FC<DiagnosticsWindowProps> = ({
     ["API key", statusValue(provider.api_key)],
     ["Microphone", statusValue(microphone.available)],
     ["Shortcut", `${statusValue(shortcut.shortcut)} · ${statusValue(shortcut.mode)}`],
+    ["Global shortcut", `${statusValue(activation.global_shortcut)} · ${statusValue(activation.shortcut_behavior)}`],
     ["Transcription", `${statusValue(transcription.status)} · ${statusValue(transcription.model)}`],
     ["Logs path", statusValue(paths.logs)],
     ["Config path", statusValue(paths.config)],

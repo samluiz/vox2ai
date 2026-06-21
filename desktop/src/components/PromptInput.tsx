@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { QUICK_ACTIONS } from "../utils/context";
 
 interface PromptInputProps {
@@ -18,6 +18,14 @@ const PromptInput: React.FC<PromptInputProps> = ({
   const [hasValue, setHasValue] = useState(false);
   const [isFocused, setIsFocused] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+
+  useEffect(() => {
+    const focusInput = () => {
+      if (!disabled) inputRef.current?.focus();
+    };
+    window.addEventListener("vox2ai-focus-prompt", focusInput);
+    return () => window.removeEventListener("vox2ai-focus-prompt", focusInput);
+  }, [disabled]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLInputElement>) => {

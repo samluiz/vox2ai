@@ -42,6 +42,19 @@ def _detect_target_triple() -> str | None:
     return _TRIPLES.get(system, {}).get(machine)
 
 
+def sidecar_destination_name(
+    *,
+    system: str,
+    machine: str,
+    windows: bool = False,
+) -> str:
+    triple = _TRIPLES.get(system, {}).get(machine)
+    if triple is None:
+        raise ValueError(f"unsupported platform: {system} / {machine}")
+    suffix = ".exe" if windows else ""
+    return f"vox2ai-server-{triple}{suffix}"
+
+
 def main() -> None:
     triple = _detect_target_triple()
     if triple is None:
@@ -61,9 +74,13 @@ def main() -> None:
         sys.exit(1)
 
     # Tauri v2 sidecar naming: <name>-<target-triple><.exe>
-    dest_name = f"vox2ai-server-{triple}"
-    if sys.platform == "win32":
-        dest_name += ".exe"
+    import platform
+
+    dest_name = sidecar_destination_name(
+        system=platform.system(),
+        machine=platform.machine(),
+        windows=sys.platform == "win32",
+    )
     dest = TAURI_BIN_DIR / dest_name
 
     TAURI_BIN_DIR.mkdir(parents=True, exist_ok=True)

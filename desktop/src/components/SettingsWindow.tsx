@@ -4,18 +4,25 @@ import type { BackendConnectionState } from "../api/websocket";
 import RecordingSettings from "./RecordingSettings";
 import type { RecordingActivationMode } from "../utils/shortcut";
 import { useLargeOverlayWindow } from "../hooks/useLargeOverlayWindow";
+import ActivationSettings, {
+  type ActivationRuntimeStatus,
+} from "./ActivationSettings";
 
 interface Props {
   ws: WebSocketClient | null;
   initialSettings: Record<string, unknown> | null;
   backendConnectionState: BackendConnectionState;
+  backendRuntimeState?: string;
+  activationRuntimeStatus?: ActivationRuntimeStatus | null;
   onOpenDiagnostics: () => void;
+  onRestartBackend: () => void;
   onClose: () => void;
   onSettingsChanged: () => void;
 }
 
 type Section =
   | "provider"
+  | "activation"
   | "voice"
   | "commands"
   | "general"
@@ -26,6 +33,7 @@ type Section =
 
 const SECTIONS: { id: Section; label: string }[] = [
   { id: "provider", label: "Provider" },
+  { id: "activation", label: "Activation" },
   { id: "voice", label: "Voice & Controls" },
   { id: "commands", label: "Commands" },
   { id: "general", label: "General" },
@@ -49,7 +57,10 @@ const SettingsWindow: React.FC<Props> = ({
   ws,
   initialSettings,
   backendConnectionState,
+  backendRuntimeState = "unknown",
+  activationRuntimeStatus,
   onOpenDiagnostics,
+  onRestartBackend,
   onClose,
   onSettingsChanged,
 }) => {
@@ -107,6 +118,7 @@ const SettingsWindow: React.FC<Props> = ({
 
     // Other sections (from the settings state)
     if (settings.voice) patch.voice = settings.voice;
+    if (settings.activation) patch.activation = settings.activation;
     if (settings.recording) patch.recording = settings.recording;
     if (settings.transcription) patch.transcription = settings.transcription;
     if (settings.commands) patch.commands = settings.commands;
@@ -116,6 +128,7 @@ const SettingsWindow: React.FC<Props> = ({
     if (settings.quick_actions) patch.quick_actions = settings.quick_actions;
     if (settings.onboarding) patch.onboarding = settings.onboarding;
     if (settings.desktop_window) patch.desktop_window = settings.desktop_window;
+    if (settings.desktop) patch.desktop = settings.desktop;
     if (settings.debug) patch.debug = settings.debug;
 
     send({ type: "update_settings", settings: patch });
@@ -440,6 +453,61 @@ const SettingsWindow: React.FC<Props> = ({
     );
   };
 
+  const renderActivation = () => {
+    const general = (settings.general as Record<string, unknown>) ?? {};
+    const activation = (settings.activation as Record<string, unknown>) ?? {};
+    const desktopWindow = (settings.desktop_window as Record<string, unknown>) ?? {};
+    const desktop = (settings.desktop as Record<string, unknown>) ?? {};
+
+    const setGeneral = (key: string, value: unknown) => {
+      setSettings((s) => ({
+        ...s,
+        general: {
+          ...general,
+          [key]: value,
+          ...(key === "start_at_login" ? { launch_at_login: value } : {}),
+        },
+      }));
+      updateDirty();
+    };
+    const setActivation = (key: string, value: unknown) => {
+      setSettings((s) => ({ ...s, activation: { ...activation, [key]: value } }));
+      updateDirty();
+    };
+    const setDesktopWindow = (key: string, value: unknown) => {
+      setSettings((s) => ({ ...s, desktop_window: { ...desktopWindow, [key]: value } }));
+      updateDirty();
+    };
+    const setDesktop = (key: string, value: unknown) => {
+      setSettings((s) => ({ ...s, desktop: { ...desktop, [key]: value } }));
+      updateDirty();
+    };
+
+    return (
+      <div className="settings-section">
+        <h3 className="settings-section-title">Activation & Background</h3>
+        <ActivationSettings
+          general={general}
+          activation={activation}
+          desktopWindow={desktopWindow}
+          desktop={desktop}
+          backendState={backendRuntimeState}
+          activationRuntimeStatus={activationRuntimeStatus}
+          onGeneralChange={setGeneral}
+          onActivationChange={setActivation}
+          onDesktopWindowChange={setDesktopWindow}
+          onDesktopChange={setDesktop}
+          onRestartBackend={onRestartBackend}
+        />
+        <div className="form-actions">
+          <button className="form-btn form-btn-primary" onClick={save} disabled={!dirty || saving}>
+            {saving ? "Saving…" : saved ? "Saved ✓" : "Save"}
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const renderCommands = () => {
     const cmds = (settings.commands as Record<string, unknown>) ?? {};
 
@@ -516,14 +584,9 @@ const SettingsWindow: React.FC<Props> = ({
   };
 
   const renderGeneral = () => {
-    const general = (settings.general as Record<string, unknown>) ?? {};
     const conversation = (settings.conversation as Record<string, unknown>) ?? {};
     const quickActions = (settings.quick_actions as Record<string, unknown>) ?? {};
 
-    const setGeneral = (key: string, value: unknown) => {
-      setSettings((s) => ({ ...s, general: { ...general, [key]: value } }));
-      updateDirty();
-    };
     const setConversation = (key: string, value: unknown) => {
       setSettings((s) => ({ ...s, conversation: { ...conversation, [key]: value } }));
       updateDirty();
@@ -536,33 +599,6 @@ const SettingsWindow: React.FC<Props> = ({
     return (
       <div className="settings-section">
         <h3 className="settings-section-title">General</h3>
-        <div className="form-group">
-          <label className="form-check-label">
-            <input
-              type="checkbox"
-              checked={(general.minimize_to_tray as boolean) ?? true}
-              onChange={(e) => setGeneral("minimize_to_tray", e.target.checked)}
-            />
-            {" "}Minimize to tray
-          </label>
-        </div>
-        <div className="form-group">
-          <label className="form-check-label">
-            <input
-              type="checkbox"
-              checked={(general.start_hidden as boolean) ?? false}
-              onChange={(e) => setGeneral("start_hidden", e.target.checked)}
-            />
-            {" "}Start hidden
-          </label>
-        </div>
-        <div className="form-group disabled-setting">
-          <label className="form-check-label">
-            <input type="checkbox" disabled />
-            {" "}Launch at login
-          </label>
-          <p className="form-hint">Coming later.</p>
-        </div>
         <div className="form-group">
           <label className="form-check-label">
             <input
@@ -846,6 +882,7 @@ const SettingsWindow: React.FC<Props> = ({
     }
     switch (section) {
       case "provider": return renderProvider();
+      case "activation": return renderActivation();
       case "voice": return renderVoice();
       case "commands": return renderCommands();
       case "general": return renderGeneral();

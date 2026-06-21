@@ -6,6 +6,7 @@ from platformdirs import user_config_dir
 from pydantic import BaseModel, Field, field_validator
 
 from vox2ai.errors import ConfigError
+from vox2ai.shortcuts import validate_shortcut
 
 _APP_NAME = "vox2ai"
 
@@ -36,6 +37,8 @@ mode = "push-to-talk"
 backend = "window"
 key = "KEY_RIGHTCTRL"
 fallback_key = "KEY_RIGHTCTRL"
+global_shortcut = "Ctrl+Space"
+shortcut_behavior = "show-and-record"
 
 [recording]
 activation_mode = "hold-to-talk"
@@ -107,7 +110,8 @@ voice = ""
 
 [general]
 minimize_to_tray = true
-start_hidden = false
+start_hidden = true
+start_at_login = false
 launch_at_login = false
 
 [onboarding]
@@ -130,15 +134,25 @@ enabled = true
 [desktop_window]
 user_resizable = true
 remember_size = true
+remember_position = true
 manual_size = false
 width = 520
 height = 160
 position = "top-center"
+summon_position = "active-monitor-top-center"
 always_on_top = true
 transparent = true
+auto_hide_after_answer = false
+auto_hide_delay_ms = 2500
 inactive_opacity = 0.08
 active_opacity = 0.98
 fade_after_seconds = 8
+
+[desktop]
+host = "127.0.0.1"
+port = 8765
+auto_launch_frontend = true
+auto_restart_backend = true
 
 [debug]
 enabled = false
@@ -325,6 +339,8 @@ class ActivationConfig(BaseModel):
     backend: str = "window"
     key: str = "KEY_RIGHTCTRL"
     fallback_key: str = "KEY_RIGHTCTRL"
+    global_shortcut: str = "Ctrl+Space"
+    shortcut_behavior: str = "show-and-record"
 
     @field_validator("backend")
     @classmethod
@@ -332,6 +348,19 @@ class ActivationConfig(BaseModel):
         allowed = {"window", "evdev"}
         if v not in allowed:
             raise ValueError(f"activation.backend must be one of {allowed}")
+        return v
+
+    @field_validator("global_shortcut")
+    @classmethod
+    def validate_global_shortcut(cls, v: str) -> str:
+        return validate_shortcut(v, allow_modifier_only=False)
+
+    @field_validator("shortcut_behavior")
+    @classmethod
+    def validate_shortcut_behavior(cls, v: str) -> str:
+        allowed = {"show-widget", "show-and-focus-input", "show-and-record", "toggle-widget"}
+        if v not in allowed:
+            raise ValueError(f"activation.shortcut_behavior must be one of {allowed}")
         return v
 
 
@@ -350,12 +379,7 @@ class RecordingConfig(BaseModel):
     @field_validator("shortcut")
     @classmethod
     def validate_shortcut(cls, v: str) -> str:
-        shortcut = v.strip()
-        if not shortcut:
-            raise ValueError("recording.shortcut must not be empty")
-        if shortcut.lower() in {"escape", "esc"}:
-            raise ValueError("Escape is reserved for cancel")
-        return shortcut
+        return validate_shortcut(v, allow_modifier_only=True)
 
 
 class OverlayConfig(BaseModel):
@@ -440,7 +464,8 @@ class TTSConfig(BaseModel):
 
 class GeneralConfig(BaseModel):
     minimize_to_tray: bool = True
-    start_hidden: bool = False
+    start_hidden: bool = True
+    start_at_login: bool = False
     launch_at_login: bool = False
 
 
@@ -483,20 +508,40 @@ class DesktopConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8765
     auto_launch_frontend: bool = True
+    auto_restart_backend: bool = True
 
 
 class DesktopWindowConfig(BaseModel):
     user_resizable: bool = True
     remember_size: bool = True
+    remember_position: bool = True
     manual_size: bool = False
     width: int = 520
     height: int = 160
     position: str = "top-center"
+    summon_position: str = "active-monitor-top-center"
     always_on_top: bool = True
     transparent: bool = True
+    auto_hide_after_answer: bool = False
+    auto_hide_delay_ms: int = 2500
     inactive_opacity: float = 0.08
     active_opacity: float = 0.98
     fade_after_seconds: int = 8
+
+    @field_validator("summon_position")
+    @classmethod
+    def validate_summon_position(cls, v: str) -> str:
+        allowed = {"active-monitor-top-center", "primary-monitor-top-center", "remembered"}
+        if v not in allowed:
+            raise ValueError(f"desktop_window.summon_position must be one of {allowed}")
+        return v
+
+    @field_validator("auto_hide_delay_ms")
+    @classmethod
+    def validate_auto_hide_delay(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("desktop_window.auto_hide_delay_ms must be non-negative")
+        return v
 
 
 class DebugConfig(BaseModel):
@@ -558,6 +603,16 @@ def _migrate_voice_config(data: dict[str, object]) -> dict[str, object]:
     return data
 
 
+def _migrate_general_config(data: dict[str, object]) -> dict[str, object]:
+    """Backward compatibility: map old ``launch_at_login`` to ``start_at_login``."""
+    general = data.get("general")
+    if not isinstance(general, dict):
+        return data
+    if "start_at_login" not in general and "launch_at_login" in general:
+        general["start_at_login"] = general["launch_at_login"]
+    return data
+
+
 def load_config() -> AppConfig:
     path = config_path()
     if not path.exists():
@@ -568,6 +623,7 @@ def load_config() -> AppConfig:
         raise ConfigError(f"Invalid config TOML at {path}: {e}") from e
     try:
         data = _migrate_voice_config(data)
+        data = _migrate_general_config(data)
         return AppConfig.model_validate(data)
     except Exception as e:
         raise ConfigError(f"Config validation failed: {e}") from e

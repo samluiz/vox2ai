@@ -181,6 +181,15 @@ class DesktopController:
                 "status": "configured",
                 "shortcut": self._config.recording.shortcut,
                 "mode": self._config.recording.activation_mode,
+                "global": self._config.activation.global_shortcut,
+                "behavior": self._config.activation.shortcut_behavior,
+            },
+            "activation": {
+                "global_shortcut": self._config.activation.global_shortcut,
+                "shortcut_behavior": self._config.activation.shortcut_behavior,
+                "start_at_login": self._config.general.start_at_login,
+                "start_hidden": self._config.general.start_hidden,
+                "minimize_to_tray": self._config.general.minimize_to_tray,
             },
             "transcription": {
                 "status": "ready",
@@ -991,6 +1000,11 @@ def _apply_settings_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig
             if hasattr(updated.recording, k):
                 setattr(updated.recording, k, v)
 
+    if "activation" in patch:
+        for k, v in patch["activation"].items():
+            if hasattr(updated.activation, k):
+                setattr(updated.activation, k, v)
+
     if "transcription" in patch:
         t = patch["transcription"]
         if isinstance(t, dict):
@@ -1011,6 +1025,7 @@ def _apply_settings_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig
         for k, v in patch["general"].items():
             if hasattr(updated.general, k):
                 setattr(updated.general, k, v)
+        updated.general.launch_at_login = updated.general.start_at_login
 
     if "onboarding" in patch:
         for k, v in patch["onboarding"].items():
@@ -1036,6 +1051,11 @@ def _apply_settings_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig
         for k, v in patch["desktop_window"].items():
             if hasattr(updated.desktop_window, k):
                 setattr(updated.desktop_window, k, v)
+
+    if "desktop" in patch:
+        for k, v in patch["desktop"].items():
+            if hasattr(updated.desktop, k):
+                setattr(updated.desktop, k, v)
 
     if "debug" in patch:
         for k, v in patch["debug"].items():

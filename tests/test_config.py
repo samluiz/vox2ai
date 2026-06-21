@@ -40,12 +40,18 @@ def test_default_config_creation() -> None:
     assert "[recording]" in content
     assert 'activation_mode = "hold-to-talk"' in content
     assert 'shortcut = "Ctrl"' in content
+    assert 'global_shortcut = "Ctrl+Space"' in content
+    assert 'shortcut_behavior = "show-and-record"' in content
     assert "[general]" in content
+    assert "start_hidden = true" in content
+    assert "start_at_login = false" in content
     assert "[onboarding]" in content
     assert "[conversation]" in content
     assert "[context]" in content
     assert "[quick_actions]" in content
     assert "[desktop_window]" in content
+    assert 'summon_position = "active-monitor-top-center"' in content
+    assert "auto_hide_after_answer = false" in content
     assert "[transcription.partial]" in content
 
 
@@ -128,6 +134,8 @@ def test_timeout_validation() -> None:
 def test_app_config_defaults() -> None:
     cfg = AppConfig()
     assert cfg.activation.backend == "window"
+    assert cfg.activation.global_shortcut == "Ctrl+Space"
+    assert cfg.activation.shortcut_behavior == "show-and-record"
     assert cfg.overlay.always_visible is True
     assert cfg.overlay.auto_hide is False
     assert cfg.overlay.active_opacity == 0.96
@@ -140,8 +148,14 @@ def test_app_config_defaults() -> None:
     assert cfg.recording.shortcut == "Ctrl"
     assert cfg.desktop_window.user_resizable is True
     assert cfg.desktop_window.remember_size is True
+    assert cfg.desktop_window.remember_position is True
+    assert cfg.desktop_window.summon_position == "active-monitor-top-center"
+    assert cfg.desktop_window.auto_hide_after_answer is False
+    assert cfg.desktop_window.auto_hide_delay_ms == 2500
     assert cfg.desktop_window.manual_size is False
     assert cfg.general.minimize_to_tray is True
+    assert cfg.general.start_hidden is True
+    assert cfg.general.start_at_login is False
     assert cfg.onboarding.completed is False
     assert cfg.conversation.enabled is True
     assert cfg.context.clipboard_enabled is True
@@ -188,8 +202,16 @@ sample_rate = 8000
 def test_activation_backend_validation() -> None:
     ActivationConfig(backend="window")
     ActivationConfig(backend="evdev")
+    cfg = ActivationConfig(global_shortcut="Alt+Space", shortcut_behavior="show-widget")
+    assert cfg.global_shortcut == "Alt+Space"
     with pytest.raises(ValidationError):
         ActivationConfig(backend="x11")
+    with pytest.raises(ValidationError):
+        ActivationConfig(global_shortcut="Ctrl")
+    with pytest.raises(ValidationError):
+        ActivationConfig(global_shortcut="Escape")
+    with pytest.raises(ValidationError):
+        ActivationConfig(shortcut_behavior="record-silently")
 
 
 def test_recording_config_defaults_and_validation() -> None:

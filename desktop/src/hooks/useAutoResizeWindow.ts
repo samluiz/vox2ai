@@ -74,6 +74,16 @@ export function useAutoResizeWindow({
       if (compact) {
         cardW = compact.width;
         cardH = compact.height;
+        // Account for the quick-actions dropdown that is positioned
+        // absolutely outside the card's normal flow.
+        const menu = card.querySelector<HTMLElement>(".quick-actions-menu");
+        if (menu) {
+          const menuH =
+            menu.offsetHeight > 0
+              ? menu.offsetHeight
+              : menu.querySelectorAll(".quick-action-item").length * 28 + 12;
+          cardH = compact.height + 6 + Math.min(menuH, 240);
+        }
       } else {
         cardW = clamp(card.scrollWidth, MIN_CARD_WIDTH, MAX_CARD_WIDTH);
         cardW = Math.max(cardW, PREFERRED_CARD_WIDTH);

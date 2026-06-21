@@ -76,6 +76,19 @@ export function validateRecordingShortcut(shortcut: string): string | null {
   return null;
 }
 
+export function validateGlobalShortcut(shortcut: string): string | null {
+  const normalized = normalizeShortcut(shortcut);
+  if (!normalized) return "Shortcut cannot be empty.";
+  if (normalized === "Escape") return "Esc is reserved for cancel.";
+  const parts = normalized.split("+");
+  const hasPrimaryKey = parts.some((part) => !MODIFIER_KEYS.has(part));
+  if (!hasPrimaryKey) return "Global shortcut must include a non-modifier key.";
+  if (/^[A-Z0-9]$/.test(normalized)) {
+    return "Use a modifier or function key to avoid conflicts while typing.";
+  }
+  return null;
+}
+
 export function shortcutMatchesEvent(
   event: KeyboardEvent,
   shortcut: string

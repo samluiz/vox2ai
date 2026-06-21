@@ -52,6 +52,12 @@ def sanitize_config(config: AppConfig) -> dict[str, object]:
             "activation_mode": config.recording.activation_mode,
             "shortcut": config.recording.shortcut,
         },
+        "activation": {
+            "global_shortcut": config.activation.global_shortcut,
+            "shortcut_behavior": config.activation.shortcut_behavior,
+            "mode": config.activation.mode,
+            "backend": config.activation.backend,
+        },
         "transcription": {
             "mode": config.transcription.mode,
             "show_partial": config.transcription.show_partial,
@@ -75,6 +81,7 @@ def sanitize_config(config: AppConfig) -> dict[str, object]:
         "general": {
             "minimize_to_tray": config.general.minimize_to_tray,
             "start_hidden": config.general.start_hidden,
+            "start_at_login": config.general.start_at_login,
             "launch_at_login": config.general.launch_at_login,
         },
         "onboarding": {
@@ -97,14 +104,21 @@ def sanitize_config(config: AppConfig) -> dict[str, object]:
         "desktop_window": {
             "user_resizable": config.desktop_window.user_resizable,
             "remember_size": config.desktop_window.remember_size,
+            "remember_position": config.desktop_window.remember_position,
             "manual_size": config.desktop_window.manual_size,
             "width": config.desktop_window.width,
             "height": config.desktop_window.height,
             "always_on_top": config.desktop_window.always_on_top,
+            "summon_position": config.desktop_window.summon_position,
+            "auto_hide_after_answer": config.desktop_window.auto_hide_after_answer,
+            "auto_hide_delay_ms": config.desktop_window.auto_hide_delay_ms,
             "active_opacity": config.desktop_window.active_opacity,
             "inactive_opacity": config.desktop_window.inactive_opacity,
             "fade_after_seconds": config.desktop_window.fade_after_seconds,
             "position": config.desktop_window.position,
+        },
+        "desktop": {
+            "auto_restart_backend": config.desktop.auto_restart_backend,
         },
         "debug": {
             "show_timings": config.debug.show_timings,

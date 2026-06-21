@@ -9,12 +9,14 @@ interface ShortcutRecorderProps {
   value: string;
   onChange: (shortcut: string) => void;
   disabled?: boolean;
+  validate?: (shortcut: string) => string | null;
 }
 
 const ShortcutRecorder: React.FC<ShortcutRecorderProps> = ({
   value,
   onChange,
   disabled,
+  validate = validateRecordingShortcut,
 }) => {
   const captureRef = useRef<HTMLButtonElement>(null);
   const [capturing, setCapturing] = useState(false);
@@ -44,7 +46,7 @@ const ShortcutRecorder: React.FC<ShortcutRecorderProps> = ({
           event.preventDefault();
           event.stopPropagation();
           const next = shortcutFromKeyboardEvent(event);
-          const validation = validateRecordingShortcut(next);
+          const validation = validate(next);
           if (validation) {
             setError(validation);
             return;

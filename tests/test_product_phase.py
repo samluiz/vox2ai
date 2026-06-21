@@ -15,7 +15,10 @@ from vox2ai.secrets import FallbackStore, set_secret_store
 def test_product_phase_config_defaults() -> None:
     cfg = AppConfig()
     assert cfg.general.minimize_to_tray is True
-    assert cfg.general.start_hidden is False
+    assert cfg.general.start_hidden is True
+    assert cfg.general.start_at_login is False
+    assert cfg.activation.global_shortcut == "Ctrl+Space"
+    assert cfg.activation.shortcut_behavior == "show-and-record"
     assert cfg.onboarding.completed is False
     assert cfg.conversation.enabled is True
     assert cfg.conversation.max_messages == 10
@@ -80,11 +83,20 @@ async def test_conversation_context_is_bounded_and_clearable(
     captured_prompts: list[str] = []
     controller.set_broadcast(events.append, asyncio.get_running_loop())
 
-    def fake_decision(_llm: object, prompt: str) -> AgentDecision:
-        captured_prompts.append(prompt)
-        return AgentDecision(type="answer", message="ok", command=None, reason=None)
+    async def fake_process_prompt(
+        self: DesktopController,
+        prompt: str,
+        generation: int,
+        context: dict[str, object] | None = None,
+    ) -> None:
+        self._append_conversation("user", prompt)
+        captured_prompts.append(self._build_prompt(prompt, context))
+        await self._handle_decision(
+            AgentDecision(type="answer", message="ok", command=None, reason=None),
+            generation,
+        )
 
-    monkeypatch.setattr("vox2ai.desktop_server._do_decision", fake_decision)
+    monkeypatch.setattr(DesktopController, "_process_user_prompt", fake_process_prompt)
 
     await controller.handle_command('{"type": "submit_text_prompt", "text": "first"}')
     await asyncio.sleep(0)
@@ -115,15 +127,23 @@ async def test_command_approval_event_includes_risk_metadata(
     events: list[Any] = []
     controller.set_broadcast(events.append, asyncio.get_running_loop())
 
-    monkeypatch.setattr(
-        "vox2ai.desktop_server._do_decision",
-        lambda _llm, _prompt: AgentDecision(
-            type="command",
-            message="Check files",
-            command="ls -la",
-            reason="List current files",
-        ),
+    decision = AgentDecision(
+        type="command",
+        message="Check files",
+        command="ls -la",
+        reason="List current files",
     )
+
+    async def fake_process_prompt(
+        self: DesktopController,
+        prompt: str,
+        generation: int,
+        _context: dict[str, object] | None = None,
+    ) -> None:
+        self._append_conversation("user", prompt)
+        await self._handle_decision(decision, generation)
+
+    monkeypatch.setattr(DesktopController, "_process_user_prompt", fake_process_prompt)
 
     await controller.handle_command('{"type": "submit_text_prompt", "text": "list files"}')
     await asyncio.sleep(0)
@@ -144,15 +164,23 @@ async def test_high_risk_command_requires_approval_even_in_allow_all(
     events: list[Any] = []
     controller.set_broadcast(events.append, asyncio.get_running_loop())
 
-    monkeypatch.setattr(
-        "vox2ai.desktop_server._do_decision",
-        lambda _llm, _prompt: AgentDecision(
-            type="command",
-            message="Dangerous cleanup",
-            command="rm -rf ./build",
-            reason="Remove build output",
-        ),
+    decision = AgentDecision(
+        type="command",
+        message="Dangerous cleanup",
+        command="rm -rf ./build",
+        reason="Remove build output",
     )
+
+    async def fake_process_prompt(
+        self: DesktopController,
+        prompt: str,
+        generation: int,
+        _context: dict[str, object] | None = None,
+    ) -> None:
+        self._append_conversation("user", prompt)
+        await self._handle_decision(decision, generation)
+
+    monkeypatch.setattr(DesktopController, "_process_user_prompt", fake_process_prompt)
 
     await controller.handle_command('{"type": "submit_text_prompt", "text": "clean build"}')
     await asyncio.sleep(0)

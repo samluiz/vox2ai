@@ -18,6 +18,7 @@ import {
   applyAlwaysOnTop,
   applyFocus,
   deriveWindowMode,
+  hideWindowToTray,
   setLargeOverlayWindow,
   type WindowMode,
 } from "./api/windowManager";
@@ -49,6 +50,33 @@ function log(...args: unknown[]) {
 }
 
 const DEFAULT_WS_URL = "ws://127.0.0.1:8765";
+
+type BackendRuntimeState = "starting" | "running" | "restarting" | "stopped" | "failed";
+
+interface BackendRuntimePayload {
+  state: BackendRuntimeState;
+  message?: string;
+  attempts?: number;
+  url?: string | null;
+  log_path?: string;
+}
+
+interface ActivationRuntimeStatus {
+  registered?: boolean;
+  shortcut?: string | null;
+  behavior?: string;
+  error?: string | null;
+  global_shortcut_supported?: boolean;
+  platform?: string;
+  message?: string | null;
+  start_at_login_supported?: boolean;
+  start_at_login_enabled?: boolean;
+}
+
+interface GlobalShortcutPayload {
+  shortcut: string;
+  behavior: "show-widget" | "show-and-focus-input" | "show-and-record" | "toggle-widget";
+}
 
 const App: React.FC = () => {
   const wsRef = useRef<WebSocketClient | null>(null);
@@ -86,6 +114,12 @@ const App: React.FC = () => {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [diagnosticsData, setDiagnosticsData] = useState<Record<string, unknown> | null>(null);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [backendRuntime, setBackendRuntime] = useState<BackendRuntimePayload>({
+    state: "stopped",
+    message: "Backend stopped.",
+  });
+  const [activationRuntimeStatus, setActivationRuntimeStatus] =
+    useState<ActivationRuntimeStatus | null>(null);
   const [contextIndicator, setContextIndicator] = useState<string | null>(null);
   const [pendingClipboard, setPendingClipboard] = useState<{
     prompt: string;
@@ -99,12 +133,23 @@ const App: React.FC = () => {
   const isHoveredRef = useRef(false);
   const largeOverlayOpenRef = useRef(false);
   const startHiddenAppliedRef = useRef(false);
+  const settingsReceivedRef = useRef(false);
+  const compactInitRef = useRef(false);
+  const pendingStartRecordingRef = useRef(false);
+  const wasStreamingRef = useRef(false);
+  const autoHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const disconnectRestartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevModeRef = useRef<string | null>(null);
+  const isActiveRef = useRef(false);
   const { connectionState, isBackendConnected } = useBackendConnectionState(wsClient);
 
   const isActive =
     isListening || isTranscribing || isThinking || isStreaming || isApproval;
+
+  useEffect(() => {
+    isActiveRef.current = isActive;
+  }, [isActive]);
   const isCancellable = isListening || isTranscribing || isThinking || isStreaming;
   const recording = (settingsData?.recording as Record<string, unknown> | undefined) ?? {};
   const recordingActivationMode =
@@ -118,6 +163,14 @@ const App: React.FC = () => {
           manual_size?: boolean;
           width?: number;
           height?: number;
+          always_on_top?: boolean;
+          auto_hide_after_answer?: boolean;
+          auto_hide_delay_ms?: number;
+          remember_position?: boolean;
+          summon_position?: string;
+          fade_after_seconds?: number;
+          active_opacity?: number;
+          inactive_opacity?: number;
         }
       | undefined) ?? null;
   const contextSettings =
@@ -134,28 +187,66 @@ const App: React.FC = () => {
       true
   );
 
+  const applyRuntimeSettings = useCallback((s: Record<string, unknown>) => {
+    const general = (s.general as Record<string, unknown> | undefined) ?? {};
+    const activation = (s.activation as Record<string, unknown> | undefined) ?? {};
+    const desktop = (s.desktop as Record<string, unknown> | undefined) ?? {};
+    invoke("configure_runtime_settings", {
+      settings: {
+        minimize_to_tray: general.minimize_to_tray,
+        start_at_login: general.start_at_login ?? general.launch_at_login,
+        auto_restart_backend: desktop.auto_restart_backend,
+        global_shortcut: activation.global_shortcut,
+        shortcut_behavior: activation.shortcut_behavior,
+      },
+    })
+      .then((status) => setActivationRuntimeStatus(status as ActivationRuntimeStatus))
+      .catch((err) => {
+        setActivationRuntimeStatus({
+          registered: false,
+          error: String(err),
+        });
+      });
+  }, []);
+
   useEffect(() => {
     largeOverlayOpenRef.current = largeOverlayOpen;
   }, [largeOverlayOpen]);
 
-  // Initialize compact window placement unless a larger overlay has already opened.
+  // Apply opacity CSS variables from settings.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (desktopWindowSettings?.active_opacity !== undefined) {
+      root.style.setProperty("--active-opacity", String(desktopWindowSettings.active_opacity));
+    }
+    if (desktopWindowSettings?.inactive_opacity !== undefined) {
+      root.style.setProperty("--inactive-opacity", String(desktopWindowSettings.inactive_opacity));
+    }
+  }, [desktopWindowSettings?.active_opacity, desktopWindowSettings?.inactive_opacity]);
+
+  // Initialize always-on-top and focus on mount. Defer sizing until
+  // settings arrive to avoid a compact→large overlay blink.
   useEffect(() => {
     let mounted = true;
     const init = async () => {
       await new Promise((resolve) => setTimeout(resolve, 150));
       if (!mounted) return;
-      if (largeOverlayOpenRef.current) {
-        await applyAlwaysOnTop();
-        await applyFocus();
-        return;
-      }
-      await initializeWindow();
+      await applyAlwaysOnTop();
+      await applyFocus();
     };
     init();
     return () => {
       mounted = false;
     };
   }, []);
+
+  // Deferred compact sizing: run once after settings arrive and no large overlay is open.
+  useEffect(() => {
+    if (settingsData && !onboardingOpen && !compactInitRef.current) {
+      compactInitRef.current = true;
+      initializeWindow();
+    }
+  }, [settingsData, onboardingOpen]);
 
   const startUserResize = useWindowResizePersistence({
     settings: desktopWindowSettings,
@@ -315,6 +406,7 @@ const App: React.FC = () => {
         case "settings": {
           const s = (event as unknown as { settings: Record<string, unknown> }).settings;
           setSettingsData(s);
+          applyRuntimeSettings(s);
           const setupNeeded = (s.needs_setup as boolean) ?? false;
           const onboardingCompleted = Boolean(
             (s.onboarding as Record<string, unknown> | undefined)?.completed
@@ -327,16 +419,22 @@ const App: React.FC = () => {
             !setupNeeded
           ) {
             startHiddenAppliedRef.current = true;
-            invoke("hide_widget").catch((err) => log("hide_widget unavailable", err));
+            hideWindowToTray();
           }
           setManualWindowSize(
             Boolean((s.desktop_window as Record<string, unknown> | undefined)?.manual_size)
           );
+          const aos = (s.desktop_window as Record<string, unknown> | undefined)
+            ?.always_on_top;
+          if (aos !== undefined) {
+            applyAlwaysOnTop(Boolean(aos));
+          }
           break;
         }
         case "settings_saved": {
           const s = (event as unknown as { settings: Record<string, unknown> }).settings;
           setSettingsData(s);
+          applyRuntimeSettings(s);
           const setupNeeded = (s.needs_setup as boolean) ?? false;
           const onboardingCompleted = Boolean(
             (s.onboarding as Record<string, unknown> | undefined)?.completed
@@ -346,6 +444,11 @@ const App: React.FC = () => {
           setManualWindowSize(
             Boolean((s.desktop_window as Record<string, unknown> | undefined)?.manual_size)
           );
+          const aos = (s.desktop_window as Record<string, unknown> | undefined)
+            ?.always_on_top;
+          if (aos !== undefined) {
+            applyAlwaysOnTop(Boolean(aos));
+          }
           ws.send({ type: "get_settings" });
           break;
         }
@@ -387,7 +490,7 @@ const App: React.FC = () => {
       unlistenReadyPromise.then((fn) => fn());
       unlistenErrorPromise.then((fn) => fn());
     };
-  }, []);
+  }, [applyRuntimeSettings]);
 
   useEffect(() => {
     if (isBackendConnected) return;
@@ -398,6 +501,43 @@ const App: React.FC = () => {
     setIsStreaming(false);
     setIsApproval(false);
   }, [isBackendConnected]);
+
+  useEffect(() => {
+    if (isBackendConnected) {
+      if (disconnectRestartTimerRef.current) {
+        clearTimeout(disconnectRestartTimerRef.current);
+        disconnectRestartTimerRef.current = null;
+      }
+      return;
+    }
+    const autoRestart =
+      ((settingsData?.desktop as Record<string, unknown> | undefined)
+        ?.auto_restart_backend as boolean | undefined) ?? true;
+    const disconnected =
+      connectionState === "disconnected" || connectionState === "failed";
+    if (!autoRestart || !disconnected || backendRuntime.state !== "running") return;
+    if (disconnectRestartTimerRef.current) return;
+
+    disconnectRestartTimerRef.current = setTimeout(() => {
+      disconnectRestartTimerRef.current = null;
+      setStatus("Restarting backend...");
+      invoke("restart_backend").catch((err) => log("restart_backend unavailable", err));
+    }, 800);
+  }, [backendRuntime.state, connectionState, isBackendConnected, settingsData]);
+
+  useEffect(() => {
+    invoke("get_activation_runtime_status")
+      .then((status) => setActivationRuntimeStatus(status as ActivationRuntimeStatus))
+      .catch((err) =>
+        setActivationRuntimeStatus({
+          registered: false,
+          error: String(err),
+        })
+      );
+    invoke("get_backend_runtime_status")
+      .then((payload) => setBackendRuntime(payload as BackendRuntimePayload))
+      .catch(() => undefined);
+  }, []);
 
   // Derive window mode from state.
   useEffect(() => {
@@ -436,14 +576,17 @@ const App: React.FC = () => {
   // Fade logic
   const startFadeTimer = useCallback(() => {
     if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current);
-    if (isActive || isHoveredRef.current) return;
+    if (isActiveRef.current || isHoveredRef.current) return;
+
+    const fadeAfterMs =
+      (desktopWindowSettings?.fade_after_seconds ?? 8) * 1000;
 
     fadeTimerRef.current = setTimeout(() => {
-      if (!isActive && !isHoveredRef.current) {
+      if (!isActiveRef.current && !isHoveredRef.current) {
         setIsFaded(true);
       }
-    }, 6000);
-  }, [isActive]);
+    }, fadeAfterMs);
+  }, [desktopWindowSettings?.fade_after_seconds]);
 
   const restoreOpacity = useCallback(() => {
     if (fadeTimerRef.current) clearTimeout(fadeTimerRef.current);
@@ -457,6 +600,41 @@ const App: React.FC = () => {
       startFadeTimer();
     }
   }, [isActive, isHovered, startFadeTimer, restoreOpacity]);
+
+  useEffect(() => {
+    if (isStreaming) {
+      wasStreamingRef.current = true;
+      if (autoHideTimerRef.current) {
+        clearTimeout(autoHideTimerRef.current);
+        autoHideTimerRef.current = null;
+      }
+      return;
+    }
+
+    if (
+      wasStreamingRef.current &&
+      answerText &&
+      desktopWindowSettings?.auto_hide_after_answer
+    ) {
+      wasStreamingRef.current = false;
+      const delay = desktopWindowSettings.auto_hide_delay_ms ?? 2500;
+      autoHideTimerRef.current = setTimeout(() => {
+        hideWindowToTray();
+      }, delay);
+    }
+
+    return () => {
+      if (autoHideTimerRef.current) {
+        clearTimeout(autoHideTimerRef.current);
+        autoHideTimerRef.current = null;
+      }
+    };
+  }, [
+    answerText,
+    desktopWindowSettings?.auto_hide_after_answer,
+    desktopWindowSettings?.auto_hide_delay_ms,
+    isStreaming,
+  ]);
 
   const clearSessionState = useCallback(() => {
     setTranscript("");
@@ -484,6 +662,12 @@ const App: React.FC = () => {
       isListeningRef.current = true;
     }
   }, [clearSessionState, isBackendConnected, restoreOpacity]);
+
+  useEffect(() => {
+    if (!isBackendConnected || !pendingStartRecordingRef.current) return;
+    pendingStartRecordingRef.current = false;
+    startRecording();
+  }, [isBackendConnected, startRecording]);
 
   const stopRecording = useCallback(() => {
     if (!isBackendConnected) return;
@@ -650,6 +834,33 @@ const App: React.FC = () => {
     wsRef.current?.reconnect();
   }, []);
 
+  const focusPromptInput = useCallback(() => {
+    window.setTimeout(() => {
+      window.dispatchEvent(new CustomEvent("vox2ai-focus-prompt"));
+    }, 80);
+  }, []);
+
+  const handleGlobalActivation = useCallback(
+    (payload: GlobalShortcutPayload) => {
+      restoreOpacity();
+      if (payload.behavior === "toggle-widget") return;
+
+      if (!isBackendConnected) {
+        pendingStartRecordingRef.current = payload.behavior === "show-and-record";
+        handleReconnect();
+        if (payload.behavior === "show-and-focus-input") focusPromptInput();
+        return;
+      }
+
+      if (payload.behavior === "show-and-focus-input") {
+        focusPromptInput();
+      } else if (payload.behavior === "show-and-record") {
+        startRecording();
+      }
+    },
+    [focusPromptInput, handleReconnect, isBackendConnected, restoreOpacity, startRecording]
+  );
+
   const openDiagnostics = useCallback(() => {
     setDiagnosticsOpen(true);
     wsRef.current?.send({ type: "get_diagnostics" });
@@ -666,21 +877,47 @@ const App: React.FC = () => {
     const diagnosticsPromise = listen("tray_open_diagnostics", () => {
       openDiagnostics();
     });
+    const startRecordingPromise = listen("tray_start_recording", () => {
+      if (isBackendConnected) {
+        startRecording();
+      } else {
+        pendingStartRecordingRef.current = true;
+        handleReconnect();
+      }
+    });
+    const globalShortcutPromise = listen<GlobalShortcutPayload>(
+      "global_shortcut_pressed",
+      (event) => {
+        handleGlobalActivation(event.payload);
+      }
+    );
+    const backendRuntimePromise = listen<BackendRuntimePayload>(
+      "backend_runtime_state",
+      (event) => {
+        const payload = event.payload;
+        setBackendRuntime(payload);
+        if (payload.state === "starting") {
+          setStatus(payload.message || "Backend starting...");
+        } else if (payload.state === "restarting") {
+          setStatus(payload.message || "Restarting backend...");
+        } else if (payload.state === "failed") {
+          setIsError(true);
+          setStatus(payload.message || "Backend failed to start.");
+        }
+      }
+    );
     const restartingPromise = listen("backend_restarting", () => {
       setStatus("Restarting backend...");
     });
     return () => {
       settingsPromise.then((fn) => fn());
       diagnosticsPromise.then((fn) => fn());
+      startRecordingPromise.then((fn) => fn());
+      globalShortcutPromise.then((fn) => fn());
+      backendRuntimePromise.then((fn) => fn());
       restartingPromise.then((fn) => fn());
     };
-  }, [openDiagnostics]);
-
-  useEffect(() => {
-    const onClick = () => window.focus();
-    window.addEventListener("click", onClick);
-    return () => window.removeEventListener("click", onClick);
-  }, []);
+  }, [handleGlobalActivation, handleReconnect, isBackendConnected, openDiagnostics, startRecording]);
 
   useEffect(() => {
     const onBeforeUnload = () => wsRef.current?.disconnect();
@@ -707,7 +944,9 @@ const App: React.FC = () => {
       ref={rootRef}
       className={`app-root ${isFaded ? "faded" : ""} ${
         isListening ? "listening" : ""
-      } ${isError ? "error" : ""} ${largeOverlayOpen ? "large-overlay-open" : ""}`}
+      } ${isError ? "error" : ""} ${largeOverlayOpen ? "large-overlay-open" : ""} ${
+        manualWindowSize ? "no-transition" : ""
+      }`}
       onMouseEnter={() => {
         setIsHovered(true);
         isHoveredRef.current = true;
@@ -732,6 +971,8 @@ const App: React.FC = () => {
           isError={isError}
           connectionState={connectionState}
           isBackendConnected={isBackendConnected}
+          backendRuntimeState={backendRuntime.state}
+          backendRuntimeMessage={backendRuntime.message}
           transcript={transcript}
           transcriptSource={transcriptSource}
           partialTranscript={partialTranscript}
@@ -759,6 +1000,7 @@ const App: React.FC = () => {
           onIgnoreClipboard={ignorePendingClipboard}
           onClearConversation={clearConversation}
           onSettingsClick={() => setSettingsOpen(true)}
+          onHideToTray={hideWindowToTray}
           onStartResize={startUserResize}
         />
       )}
@@ -768,7 +1010,10 @@ const App: React.FC = () => {
           ws={wsRef.current}
           initialSettings={settingsData}
           backendConnectionState={connectionState}
+          backendRuntimeState={backendRuntime.state}
+          activationRuntimeStatus={activationRuntimeStatus}
           onOpenDiagnostics={openDiagnostics}
+          onRestartBackend={handleReconnect}
           onClose={() => setSettingsOpen(false)}
           onSettingsChanged={() => wsRef.current?.send({ type: "get_settings" })}
         />

@@ -6,6 +6,7 @@ import {
   primaryMonitor,
   availableMonitors,
 } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 
 export type WindowMode = string;
 
@@ -69,16 +70,12 @@ export function deriveWindowMode(
   if (isListening && hasPartialTranscript) return "listeningWithPartial";
   if (isListening) return "listening";
   if (hasTranscript) return "thinking";
-  return "readyWithInput";
+  return "ready";
 }
 
 export function cardSizeForModeCompact(mode: string): { width: number; height: number } | null {
   const COMPACT: Record<string, { width: number; height: number }> = {
     ready: {
-      width: WINDOW_SIZE_LIMITS.minWidth - WINDOW_PADDING * 2,
-      height: WINDOW_SIZE_LIMITS.minHeight - WINDOW_PADDING * 2,
-    },
-    readyWithInput: {
       width: WINDOW_SIZE_LIMITS.minWidth - WINDOW_PADDING * 2,
       height: WINDOW_SIZE_LIMITS.minHeight - WINDOW_PADDING * 2,
     },
@@ -177,11 +174,11 @@ export async function setLargeOverlayWindow(): Promise<void> {
 /**
  * Best-effort always-on-top.
  */
-export async function applyAlwaysOnTop(): Promise<void> {
+export async function applyAlwaysOnTop(enabled: boolean = true): Promise<void> {
   try {
     const win = getCurrentWindow();
-    await win.setAlwaysOnTop(true);
-    log("setAlwaysOnTop(true) applied");
+    await win.setAlwaysOnTop(enabled);
+    log(`setAlwaysOnTop(${enabled}) applied`);
   } catch (err) {
     log("setAlwaysOnTop failed (best effort only)", err);
   }
@@ -197,6 +194,38 @@ export async function applyFocus(): Promise<void> {
     log("setFocus() applied");
   } catch (err) {
     log("setFocus failed", err);
+  }
+}
+
+/**
+ * Hide the compact widget while keeping the tray/runtime alive.
+ * Uses the current window API first, then falls back to the Rust command and
+ * finally minimize for platforms/window managers where hide is unreliable.
+ */
+export async function hideWindowToTray(): Promise<void> {
+  const win = getCurrentWindow();
+
+  try {
+    await win.hide();
+    log("window hidden via current window API");
+    return;
+  } catch (err) {
+    log("current window hide failed, trying command fallback", err);
+  }
+
+  try {
+    await invoke("hide_widget");
+    log("window hidden via hide_widget command");
+    return;
+  } catch (err) {
+    log("hide_widget command failed, trying minimize fallback", err);
+  }
+
+  try {
+    await win.minimize();
+    log("window minimized as hide fallback");
+  } catch (err) {
+    log("minimize fallback failed", err);
   }
 }
 

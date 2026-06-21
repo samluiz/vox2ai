@@ -24,6 +24,8 @@ interface Props {
   isError: boolean;
   connectionState: BackendConnectionState;
   isBackendConnected: boolean;
+  backendRuntimeState?: string;
+  backendRuntimeMessage?: string;
   transcript: string;
   transcriptSource?: string;
   partialTranscript: string;
@@ -56,6 +58,7 @@ interface Props {
   onIgnoreClipboard: () => void;
   onClearConversation: () => void;
   onSettingsClick: () => void;
+  onHideToTray: () => void;
   onStartResize: () => void;
 }
 
@@ -71,6 +74,8 @@ const AssistantWindow: React.FC<Props> = ({
   isError,
   connectionState,
   isBackendConnected,
+  backendRuntimeState,
+  backendRuntimeMessage,
   transcript,
   transcriptSource,
   partialTranscript,
@@ -98,10 +103,11 @@ const AssistantWindow: React.FC<Props> = ({
   onIgnoreClipboard,
   onClearConversation,
   onSettingsClick,
+  onHideToTray,
   onStartResize,
 }) => {
   const isDisconnected = !isBackendConnected;
-  const isReadyOrDone = mode === "ready" || mode === "readyWithInput";
+  const isReadyOrDone = mode === "ready";
   const showInput = !isDisconnected && !isListening && !isTranscribing && !isApproval;
   const showBody =
     mode === "thinking" ||
@@ -136,9 +142,11 @@ const AssistantWindow: React.FC<Props> = ({
       ref={cardRef as React.Ref<HTMLDivElement>}
       className={`assistant-card ${isError ? "assistant-card--error" : ""}`}
     >
-      <header className="widget-header" data-tauri-drag-region>
-        <div className="brand" data-tauri-drag-region>
-          vox2ai
+      <header className="widget-header">
+        <div className="header-drag-area" data-tauri-drag-region>
+          <div className="brand" data-tauri-drag-region>
+            vox2ai
+          </div>
         </div>
         <div className="header-actions">
           <StatusPill
@@ -154,12 +162,27 @@ const AssistantWindow: React.FC<Props> = ({
           />
           <button
             className="settings-gear"
-            onClick={onSettingsClick}
+            onClick={(event) => {
+              event.stopPropagation();
+              onSettingsClick();
+            }}
             title="Settings"
             aria-label="Open settings"
             type="button"
           >
             ⚙
+          </button>
+          <button
+            className="hide-to-tray"
+            onClick={(event) => {
+              event.stopPropagation();
+              onHideToTray();
+            }}
+            title="Hide to tray"
+            aria-label="Hide to tray"
+            type="button"
+          >
+            ×
           </button>
         </div>
       </header>
@@ -167,6 +190,8 @@ const AssistantWindow: React.FC<Props> = ({
       {isDisconnected && (
         <ConnectionStatus
           state={connectionState}
+          backendRuntimeState={backendRuntimeState}
+          backendRuntimeMessage={backendRuntimeMessage}
           onReconnect={onReconnect}
           onOpenSettings={onSettingsClick}
         />

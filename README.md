@@ -15,7 +15,98 @@ commands — all from a floating desktop overlay or terminal.
 - Optional command execution with permission control
 - Diagnostics (`vox2ai doctor`)
 
-## Installation
+## Download
+
+Installable Linux builds are published on the
+[GitHub Releases](https://github.com/samluiz/vox2ai/releases) page.
+
+Download one of:
+
+- `vox2ai-*.AppImage` for portable Linux use
+- `vox2ai-*.deb` for Debian/Ubuntu
+- `vox2ai-*.rpm` for Fedora/RHEL/openSUSE-style systems
+
+The packaged desktop app includes the Tauri UI and the Python backend sidecar.
+Users do not need Node, Rust, Python, or a terminal for normal use.
+
+## Install on Linux
+
+AppImage:
+
+```bash
+chmod +x vox2ai-*.AppImage
+./vox2ai-*.AppImage
+```
+
+RPM:
+
+```bash
+sudo dnf install ./vox2ai-*.rpm
+```
+
+DEB:
+
+```bash
+sudo apt install ./vox2ai-*.deb
+```
+
+After launch, vox2ai runs as a tray/background utility. Open Settings from the
+tray to configure provider, model, voice controls, startup behavior, and the
+global activation shortcut.
+
+## Run at startup
+
+Open **Settings → Activation & Background** and enable:
+
+- **Run in background**: closing the widget keeps vox2ai available in the tray.
+- **Start hidden**: launches directly into tray/background after setup.
+- **Start at login**: registers vox2ai with Linux/XDG autostart.
+
+Start-at-login currently targets Linux/XDG desktop environments. Unsupported
+platforms are shown as disabled in Settings rather than silently pretending to
+work.
+
+## Global shortcut
+
+The default global activation shortcut is:
+
+```text
+Ctrl+Space
+```
+
+Configure it in **Settings → Activation & Background**. Supported behaviors:
+
+| Behavior | Result |
+|----------|--------|
+| Show widget | Shows and focuses vox2ai |
+| Show and focus input | Shows vox2ai and focuses the prompt field |
+| Show and start recording | Shows vox2ai and starts recording |
+| Toggle widget | Shows if hidden, hides if visible |
+
+This is separate from the in-window recording shortcut and works while another
+app is focused, subject to desktop-environment shortcut restrictions.
+
+## Troubleshooting
+
+Use **Open Diagnostics** from the tray or Settings to inspect backend, provider,
+microphone, shortcut, and paths.
+
+Common checks:
+
+- **Backend failed to start**: open Diagnostics, then use **Restart backend**.
+- **Global shortcut failed to register**: choose a different shortcut; desktop
+  environments may reserve some combinations.
+- **Tray icon missing**: check your desktop environment’s tray/appindicator
+  support.
+- **Microphone unavailable**: verify the input device in your OS sound settings.
+- **Logs path**: Diagnostics shows the current logs folder. Sidecar logs are
+  written under the platform app log directory.
+- **Clean restart**: use tray **Quit vox2ai**, then launch the app again.
+
+vox2ai never records silently: microphone capture starts only from an explicit
+shortcut/action, recording state is visible, and Esc/Cancel stops active capture.
+
+## Build from source
 
 ```bash
 pip install -e ".[dev]"
@@ -24,7 +115,14 @@ pip install -e ".[dev]"
 Requires **Python >= 3.11**, a working audio input device, and a display server
 (X11 or Wayland).
 
-## Quick start
+Linux desktop packaging also needs the Tauri/WebKit/AppIndicator development
+libraries. On Fedora, install the equivalent of:
+
+```bash
+sudo dnf install webkit2gtk4.1-devel gtk3-devel libappindicator-gtk3-devel librsvg2-devel rpm-build
+```
+
+### Quick start
 
 ```bash
 vox2ai init
@@ -33,7 +131,7 @@ vox2ai doctor     # verify setup
 vox2ai            # start desktop overlay
 ```
 
-## Usage
+### Usage
 
 | Command | Description |
 |---------|-------------|
@@ -212,19 +310,29 @@ npm run tauri dev
 ### Build the desktop app
 
 ```bash
-# 1. Build the Python sidecar
-python scripts/build_sidecar.py
-
-# 2. Copy it into the Tauri binaries directory
-python scripts/copy_sidecar.py
-
-# 3. Build the Tauri desktop app
-cd desktop
-npm install
-npm run tauri build
+python scripts/build_desktop_release.py
 ```
 
 The bundled app is written to `desktop/src-tauri/target/release/bundle/`.
+
+## Release process
+
+Validate versions before tagging:
+
+```bash
+python scripts/check_versions.py
+```
+
+Create a release:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The GitHub Actions release workflow builds the Python sidecar, bundles the
+Tauri app, creates a GitHub Release, and uploads AppImage, DEB, and RPM
+artifacts. The workflow can also be run manually from GitHub Actions.
 
 ### Production behavior
 

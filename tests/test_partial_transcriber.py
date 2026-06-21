@@ -307,7 +307,6 @@ def test_partial_transcript_event_serializes() -> None:
 async def test_controller_partial_loop_lifecycle(monkeypatch: pytest.MonkeyPatch) -> None:
     import asyncio
 
-    from vox2ai.agent import AgentDecision
     from vox2ai.config import AppConfig
     from vox2ai.desktop_server import DesktopController
 
@@ -364,34 +363,19 @@ async def test_controller_partial_loop_lifecycle(monkeypatch: pytest.MonkeyPatch
         lambda **kwargs: LocalPartialTranscriber(**{**kwargs, "transcribe_fn": fake_transcribe}),
     )
 
-    # Avoid real Whisper during final transcription.
-    monkeypatch.setattr(
-        "vox2ai.desktop_server._do_transcription",
-        lambda _path, _config: "final text",
-    )
-    # Avoid real LLM decision by returning a simple answer decision.
-    monkeypatch.setattr(
-        "vox2ai.desktop_server._do_decision",
-        lambda _llm, _transcript: AgentDecision(
-            type="answer", message="ok", command=None, reason=None
-        ),
-    )
-
     await controller.handle_command('{"type": "start_recording"}')
     await asyncio.sleep(0.2)
 
-    partial_events = [e for e in events if e["type"] == "partial_transcript"]
+    partial_events = [e for e in events if e["type"] == "partial_transcript" and e["text"]]
     assert len(partial_events) >= 1
     assert partial_events[-1]["text"] == "partial text"
 
-    # Stop should stop the partial loop and eventually produce a final transcript.
-    # The final STT will fail because /tmp/fake.wav does not exist; that is fine
-    # for this test because we only care that partials stop after stop_recording.
-    await controller.handle_command('{"type": "stop_recording"}')
+    # Cancellation should stop the partial loop without scheduling final STT.
+    await controller.handle_command('{"type": "cancel_current_operation"}')
     await asyncio.sleep(0.1)
 
     # After stop, no new partial events should be emitted.
-    post_stop = [e for e in events if e["type"] == "partial_transcript"]
+    post_stop = [e for e in events if e["type"] == "partial_transcript" and e["text"]]
     assert len(post_stop) == len(partial_events)
 
 

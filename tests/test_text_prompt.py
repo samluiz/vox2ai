@@ -34,13 +34,15 @@ async def test_submit_text_prompt_emits_transcript(monkeypatch: pytest.MonkeyPat
 
     controller.set_broadcast(broadcast, loop)
 
-    # Avoid real LLM by returning a simple answer.
-    monkeypatch.setattr(
-        "vox2ai.desktop_server._do_decision",
-        lambda _llm, _transcript: AgentDecision(
-            type="answer", message="Answer text", command=None, reason=None
-        ),
-    )
+    async def fake_process_prompt(
+        self: DesktopController,
+        _prompt: str,
+        generation: int,
+        _context: dict[str, object] | None = None,
+    ) -> None:
+        self._done_out(generation)
+
+    monkeypatch.setattr(DesktopController, "_process_user_prompt", fake_process_prompt)
 
     await controller.handle_command('{"type": "submit_text_prompt", "text": "hello world"}')
     await asyncio.sleep(0)
@@ -110,16 +112,22 @@ async def test_submit_text_prompt_can_produce_command_decision(
 
     controller.set_broadcast(broadcast, loop)
 
-    # Fake LLM returning a command decision.
-    monkeypatch.setattr(
-        "vox2ai.desktop_server._do_decision",
-        lambda _llm, _transcript: AgentDecision(
-            type="command",
-            message="Running command",
-            command="git status",
-            reason="Check repo",
-        ),
+    decision = AgentDecision(
+        type="command",
+        message="Running command",
+        command="git status",
+        reason="Check repo",
     )
+
+    async def fake_process_prompt(
+        self: DesktopController,
+        _prompt: str,
+        generation: int,
+        _context: dict[str, object] | None = None,
+    ) -> None:
+        await self._handle_decision(decision, generation)
+
+    monkeypatch.setattr(DesktopController, "_process_user_prompt", fake_process_prompt)
 
     await controller.handle_command('{"type": "submit_text_prompt", "text": "check git"}')
     await asyncio.sleep(0)
@@ -151,15 +159,22 @@ async def test_blocked_command_decision_streams_explanation(
 
     controller.set_broadcast(broadcast, loop)
 
-    monkeypatch.setattr(
-        "vox2ai.desktop_server._do_decision",
-        lambda _llm, _transcript: AgentDecision(
-            type="command",
-            message="Para atualizar o Fedora, use dnf upgrade.",
-            command="sudo dnf upgrade --refresh",
-            reason="Atualizar pacotes do sistema",
-        ),
+    decision = AgentDecision(
+        type="command",
+        message="Para atualizar o Fedora, use dnf upgrade.",
+        command="sudo dnf upgrade --refresh",
+        reason="Atualizar pacotes do sistema",
     )
+
+    async def fake_process_prompt(
+        self: DesktopController,
+        _prompt: str,
+        generation: int,
+        _context: dict[str, object] | None = None,
+    ) -> None:
+        await self._handle_decision(decision, generation)
+
+    monkeypatch.setattr(DesktopController, "_process_user_prompt", fake_process_prompt)
 
     await controller.handle_command(
         '{"type": "submit_text_prompt", "text": "como atualizar meu fedora?"}'

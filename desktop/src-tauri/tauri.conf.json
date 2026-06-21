@@ -32,7 +32,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb"],
+    "targets": ["appimage", "deb", "rpm"],
     "icon": ["icons/icon.png"],
     "externalBin": [
       "binaries/vox2ai-server"
