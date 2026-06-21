@@ -9,9 +9,8 @@ fn main() {
         std::process::exit(vox2aictl_proxy(sub, &sub_args));
     }
 
-    tauri::Builder::default()
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+    // Normal launch: use the full lib setup (tray, sidecar, control server, etc.)
+    vox2ai_desktop_lib::run();
 }
 
 fn vox2aictl_proxy(command: &str, args: &[&str]) -> i32 {
