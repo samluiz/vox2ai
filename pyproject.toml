@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vox2ai"
 version = "0.1.0"
-description = "Terminal-first Linux voice assistant using speech-to-text and OpenAI-compatible LLMs"
+description = "Desktop/terminal Linux voice assistant with push-to-talk, STT, LLM, and Tauri UI"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
-keywords = ["voice", "assistant", "cli", "tui", "stt", "llm"]
+keywords = ["voice", "assistant", "cli", "tui", "stt", "llm", "overlay"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -34,6 +34,7 @@ dependencies = [
     "faster-whisper>=1.0",
     "textual>=0.41",
     "numpy>=1.24",
+    "websockets>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -43,10 +44,13 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "types-python-dateutil>=2.9",
+    "pyinstaller>=6.0",
 ]
+evdev = ["evdev>=1.7.0"]
 
 [project.scripts]
 vox2ai = "vox2ai.cli:cli"
+vox2ai-server = "vox2ai.sidecar_main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

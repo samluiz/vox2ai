@@ -9,3 +9,14 @@ build/
 .pytest_cache/
 *.wav
 .vox2ai_test_config/
+
+# Tauri/desktop
+desktop/node_modules/
+desktop/dist/
+desktop/.vite/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+desktop/src-tauri/binaries/
+!desktop/src-tauri/binaries/vox2ai-server-x86_64-unknown-linux-gnu
+*.deb
+*.rpm

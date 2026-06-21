@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Development placeholder for vox2ai-server sidecar.
+# Relies on the vox2ai-server console_scripts entry point from pyproject.toml
+# (pip install -e . makes this available).
+exec vox2ai-server "$@"

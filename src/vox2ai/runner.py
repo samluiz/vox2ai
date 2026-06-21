@@ -14,40 +14,64 @@ def _console() -> Console:
 
 def run_one_shot_assistant() -> None:
     config = load_config()
-    audio_path = None
+    recorded = None
     try:
-        _console().print("[yellow]Recording. Press Enter to stop.[/yellow]")
-        audio_path = record_until_enter(config.voice.sample_rate)
+        _console().print("[yellow]Press Enter to record, press Enter again to stop.[/yellow]")
+        recorded = record_until_enter(
+            config.voice.sample_rate,
+            min_duration_seconds=config.voice.min_duration_seconds,
+            min_rms=config.voice.min_rms,
+        )
 
         _console().print("\n[bold]You said:[/bold]")
-        transcript = transcribe_audio(audio_path, config.voice.whisper_model, config.voice.language)
-        _console().print(f"[green]{transcript}[/green]")
+        result = transcribe_audio(
+            recorded.path,
+            config.voice.whisper_model,
+            language=config.voice.language,
+            language_mode=config.voice.language_mode,
+            primary_language=config.voice.primary_language,
+            allowed_languages=config.voice.allowed_languages,
+            min_language_probability=config.voice.min_language_probability,
+        )
+        _console().print(f"[green]{result.raw_text}[/green]")
 
         _console().print("\n[bold]Answer:[/bold]")
         client = LLMClient(config.assistant)
-        answer = client.complete(ASSISTANT_SYSTEM_PROMPT, transcript)
+        answer = client.complete(ASSISTANT_SYSTEM_PROMPT, result.raw_text)
         _console().print(answer)
     except Vox2AIError as e:
         _console().print(f"[red]Error:[/red] {e}")
         raise SystemExit(1) from e
     finally:
-        if audio_path is not None:
-            audio_path.unlink(missing_ok=True)
+        if recorded is not None:
+            recorded.path.unlink(missing_ok=True)
 
 
 def run_one_shot_dictation() -> None:
     config = load_config()
-    audio_path = None
+    recorded = None
     try:
-        _console().print("[yellow]Recording. Press Enter to stop.[/yellow]")
-        audio_path = record_until_enter(config.voice.sample_rate)
+        _console().print("[yellow]Press Enter to record, press Enter again to stop.[/yellow]")
+        recorded = record_until_enter(
+            config.voice.sample_rate,
+            min_duration_seconds=config.voice.min_duration_seconds,
+            min_rms=config.voice.min_rms,
+        )
 
         _console().print("\n[bold]You said:[/bold]")
-        transcript = transcribe_audio(audio_path, config.voice.whisper_model, config.voice.language)
-        _console().print(f"[green]{transcript}[/green]")
+        result = transcribe_audio(
+            recorded.path,
+            config.voice.whisper_model,
+            language=config.voice.language,
+            language_mode=config.voice.language_mode,
+            primary_language=config.voice.primary_language,
+            allowed_languages=config.voice.allowed_languages,
+            min_language_probability=config.voice.min_language_probability,
+        )
+        _console().print(f"[green]{result.raw_text}[/green]")
     except Vox2AIError as e:
         _console().print(f"[red]Error:[/red] {e}")
         raise SystemExit(1) from e
     finally:
-        if audio_path is not None:
-            audio_path.unlink(missing_ok=True)
+        if recorded is not None:
+            recorded.path.unlink(missing_ok=True)

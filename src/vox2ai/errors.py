@@ -16,3 +16,19 @@ class TranscriptionError(Vox2AIError):
 
 class LLMError(Vox2AIError):
     """LLM API communication errors."""
+
+
+class CommandExecutionError(Vox2AIError):
+    """Command execution errors (timeout, blocked, etc)."""
+
+
+class AgentError(Vox2AIError):
+    """Agent decision/parsing errors."""
+
+
+class HotkeyError(Vox2AIError):
+    """Global hotkey listener errors."""
+
+
+class OverlayError(Vox2AIError):
+    """Desktop overlay errors."""

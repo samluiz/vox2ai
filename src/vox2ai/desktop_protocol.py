@@ -1,0 +1,319 @@
+"""Typed WebSocket message models for the vox2ai desktop frontend-backend protocol."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Literal, cast
+
+# ── Backend → frontend events ───────────────────────────────────
+
+
+@dataclass
+class HelloEvent:
+    type: Literal["hello"] = "hello"
+    version: str = "0.1.0"
+
+
+@dataclass
+class StateEvent:
+    type: Literal["state"] = "state"
+    state: str = ""
+    message: str = ""
+
+
+@dataclass
+class AudioLevelEvent:
+    type: Literal["audio_level"] = "audio_level"
+    rms: float = 0.0
+    peak: float = 0.0
+
+
+@dataclass
+class TranscriptEvent:
+    type: Literal["transcript"] = "transcript"
+    text: str = ""
+    raw_text: str | None = None
+    source: str = "voice"
+
+
+@dataclass
+class PartialTranscriptEvent:
+    type: Literal["partial_transcript"] = "partial_transcript"
+    text: str = ""
+    stable: bool = False
+
+
+@dataclass
+class AnswerStartEvent:
+    type: Literal["answer_start"] = "answer_start"
+
+
+@dataclass
+class AnswerDeltaEvent:
+    type: Literal["answer_delta"] = "answer_delta"
+    text: str = ""
+
+
+@dataclass
+class AnswerDoneEvent:
+    type: Literal["answer_done"] = "answer_done"
+
+
+@dataclass
+class CommandApprovalEvent:
+    type: Literal["command_approval"] = "command_approval"
+    command: str = ""
+    reason: str | None = None
+
+
+@dataclass
+class CommandRunningEvent:
+    type: Literal["command_running"] = "command_running"
+    command: str = ""
+
+
+@dataclass
+class CommandResultEvent:
+    type: Literal["command_result"] = "command_result"
+    command: str = ""
+    exit_code: int = 0
+    stdout: str = ""
+    stderr: str = ""
+
+
+@dataclass
+class ErrorEvent:
+    type: Literal["error"] = "error"
+    message: str = ""
+
+
+@dataclass
+class TimingEvent:
+    type: Literal["timing"] = "timing"
+    items: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class SettingsEvent:
+    type: Literal["settings"] = "settings"
+    settings: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class SettingsSavedEvent:
+    type: Literal["settings_saved"] = "settings_saved"
+    settings: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class SettingsErrorEvent:
+    type: Literal["settings_error"] = "settings_error"
+    field: str = ""
+    message: str = ""
+
+
+@dataclass
+class ProviderTestResultEvent:
+    type: Literal["provider_test_result"] = "provider_test_result"
+    ok: bool = False
+    message: str = ""
+
+
+@dataclass
+class ProviderModelsEvent:
+    type: Literal["provider_models"] = "provider_models"
+    provider_id: str = ""
+    models: list[dict[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class ProviderModelsErrorEvent:
+    type: Literal["provider_models_error"] = "provider_models_error"
+    provider_id: str = ""
+    message: str = ""
+
+
+BackendEvent = (
+    HelloEvent
+    | StateEvent
+    | AudioLevelEvent
+    | TranscriptEvent
+    | PartialTranscriptEvent
+    | AnswerStartEvent
+    | AnswerDeltaEvent
+    | AnswerDoneEvent
+    | CommandApprovalEvent
+    | CommandRunningEvent
+    | CommandResultEvent
+    | ErrorEvent
+    | TimingEvent
+    | SettingsEvent
+    | SettingsSavedEvent
+    | SettingsErrorEvent
+    | ProviderTestResultEvent
+    | ProviderModelsEvent
+    | ProviderModelsErrorEvent
+)
+
+
+def serialize_event(event: BackendEvent) -> str:
+    """Convert a BackendEvent dataclass to a JSON string."""
+    import json
+
+    data: dict[str, Any] = {}
+    for key in event.__dataclass_fields__:
+        if key == "type":
+            continue
+        v = getattr(event, key)
+        if v is not None:
+            data[key] = v
+    data["type"] = event.type
+    return json.dumps(data, default=str)
+
+
+# ── Frontend → backend commands ─────────────────────────────────
+
+
+@dataclass
+class PingCommand:
+    type: Literal["ping"] = "ping"
+
+
+@dataclass
+class StartRecordingCommand:
+    type: Literal["start_recording"] = "start_recording"
+
+
+@dataclass
+class StopRecordingCommand:
+    type: Literal["stop_recording"] = "stop_recording"
+
+
+@dataclass
+class CancelRecordingCommand:
+    type: Literal["cancel_recording"] = "cancel_recording"
+
+
+@dataclass
+class ApproveCommandCommand:
+    type: Literal["approve_command"] = "approve_command"
+
+
+@dataclass
+class DenyCommandCommand:
+    type: Literal["deny_command"] = "deny_command"
+
+
+@dataclass
+class SubmitTextPromptCommand:
+    type: Literal["submit_text_prompt"] = "submit_text_prompt"
+    text: str = ""
+
+
+@dataclass
+class GetSettingsCommand:
+    type: Literal["get_settings"] = "get_settings"
+
+
+@dataclass
+class UpdateSettingsCommand:
+    type: Literal["update_settings"] = "update_settings"
+    settings: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TestProviderCommand:
+    type: Literal["test_provider"] = "test_provider"
+    provider_id: str = ""
+    base_url: str = ""
+    api_key: str = ""
+    model: str = ""
+
+
+@dataclass
+class ListProviderModelsCommand:
+    type: Literal["list_provider_models"] = "list_provider_models"
+    provider_id: str = ""
+    base_url: str = ""
+    api_key: str = ""
+
+
+@dataclass
+class DeleteApiKeyCommand:
+    type: Literal["delete_api_key"] = "delete_api_key"
+
+
+@dataclass
+class OpenLogsCommand:
+    type: Literal["open_logs"] = "open_logs"
+
+
+@dataclass
+class OpenConfigFolderCommand:
+    type: Literal["open_config_folder"] = "open_config_folder"
+
+
+@dataclass
+class ResetSettingsCommand:
+    type: Literal["reset_settings"] = "reset_settings"
+
+
+FrontendCommand = (
+    PingCommand
+    | StartRecordingCommand
+    | StopRecordingCommand
+    | CancelRecordingCommand
+    | ApproveCommandCommand
+    | DenyCommandCommand
+    | SubmitTextPromptCommand
+    | GetSettingsCommand
+    | UpdateSettingsCommand
+    | TestProviderCommand
+    | ListProviderModelsCommand
+    | DeleteApiKeyCommand
+    | OpenLogsCommand
+    | OpenConfigFolderCommand
+    | ResetSettingsCommand
+)
+
+
+def parse_command(raw: str) -> FrontendCommand | ErrorEvent:
+    """Parse a JSON string into a FrontendCommand.
+
+    Returns an ``ErrorEvent`` on invalid JSON or unknown type.
+    """
+    import json
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        return ErrorEvent(message=f"Invalid JSON: {e}")
+
+    if not isinstance(data, dict):
+        return ErrorEvent(message="Expected JSON object")
+
+    typ = data.get("type", "")
+
+    mapping: dict[str, type] = {
+        "ping": PingCommand,
+        "start_recording": StartRecordingCommand,
+        "stop_recording": StopRecordingCommand,
+        "cancel_recording": CancelRecordingCommand,
+        "approve_command": ApproveCommandCommand,
+        "deny_command": DenyCommandCommand,
+        "submit_text_prompt": SubmitTextPromptCommand,
+        "get_settings": GetSettingsCommand,
+        "update_settings": UpdateSettingsCommand,
+        "test_provider": TestProviderCommand,
+        "list_provider_models": ListProviderModelsCommand,
+        "delete_api_key": DeleteApiKeyCommand,
+        "open_logs": OpenLogsCommand,
+        "open_config_folder": OpenConfigFolderCommand,
+        "reset_settings": ResetSettingsCommand,
+    }
+
+    cls = mapping.get(typ)
+    if cls is None:
+        return ErrorEvent(message=f"Unknown message type: {typ}")
+
+    return cast(FrontendCommand, cls(**{k: v for k, v in data.items() if k != "type"}))

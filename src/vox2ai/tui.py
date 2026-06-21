@@ -1,5 +1,4 @@
 import threading
-from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -78,7 +77,6 @@ class Vox2aiApp(App[None]):
         self._stop_recording: threading.Event = threading.Event()
         self._is_recording: bool = False
         self._mode: str = "ask"
-        self._audio_path: Path | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -138,17 +136,26 @@ class Vox2aiApp(App[None]):
         self.run_worker(self._recording_worker, thread=True)
 
     def _recording_worker(self) -> None:
-        audio_path: Path | None = None
+        audio_path = None
         try:
-            audio_path = record_until_event(self._config.voice.sample_rate, self._stop_recording)
-            self._audio_path = audio_path
+            recorded = record_until_event(
+                self._config.voice.sample_rate,
+                self._stop_recording,
+                min_duration_seconds=self._config.voice.min_duration_seconds,
+                min_rms=self._config.voice.min_rms,
+            )
+            audio_path = recorded.path
             self._is_recording = False
             self.call_from_thread(self._update_status, "Transcribing...")
 
             transcript = transcribe_audio(
-                audio_path,
+                recorded.path,
                 self._config.voice.whisper_model,
-                self._config.voice.language,
+                language=self._config.voice.language,
+                language_mode=self._config.voice.language_mode,
+                primary_language=self._config.voice.primary_language,
+                allowed_languages=self._config.voice.allowed_languages,
+                min_language_probability=self._config.voice.min_language_probability,
             )
 
             self.call_from_thread(self._write_transcript, transcript)
@@ -156,7 +163,7 @@ class Vox2aiApp(App[None]):
             if self._mode == "ask":
                 self.call_from_thread(self._update_status, "Sending to LLM...")
                 client = LLMClient(self._config.assistant)
-                answer = client.complete(ASSISTANT_SYSTEM_PROMPT, transcript)
+                answer = client.complete(ASSISTANT_SYSTEM_PROMPT, transcript.raw_text)
                 self.call_from_thread(self._write_answer, answer)
 
             self.call_from_thread(
@@ -169,4 +176,3 @@ class Vox2aiApp(App[None]):
         finally:
             if audio_path is not None:
                 audio_path.unlink(missing_ok=True)
-                self._audio_path = None

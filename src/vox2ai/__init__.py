@@ -1,6 +1,22 @@
+from vox2ai.agent import AgentDecision, parse_agent_decision
+from vox2ai.commands import (
+    CommandResult,
+    ProposedCommand,
+    is_blocked,
+    requires_approval,
+    run_command,
+)
 from vox2ai.config import (
+    ActivationConfig,
     AppConfig,
     AssistantConfig,
+    CommandsConfig,
+    DebugConfig,
+    DesktopConfig,
+    DesktopWindowConfig,
+    PerformanceConfig,
+    TranscriptionConfig,
+    TranscriptionContextConfig,
     TTSConfig,
     TUIConfig,
     VoiceConfig,
@@ -10,13 +26,23 @@ from vox2ai.config import (
     save_config,
 )
 from vox2ai.errors import (
+    AgentError,
     AudioError,
+    CommandExecutionError,
     ConfigError,
     LLMError,
     TranscriptionError,
     Vox2AIError,
 )
 from vox2ai.prompts import ASSISTANT_SYSTEM_PROMPT
+from vox2ai.timing import Timer
+from vox2ai.transcript import (
+    TranscriptCandidate,
+    build_initial_prompt,
+    normalize_transcript,
+    refine_transcript_if_enabled,
+)
+from vox2ai.vocabulary import VocabularyContext, build_vocabulary_context
 
 __all__ = [
     "Vox2AIError",
@@ -24,9 +50,19 @@ __all__ = [
     "AudioError",
     "TranscriptionError",
     "LLMError",
+    "CommandExecutionError",
+    "AgentError",
     "AppConfig",
     "AssistantConfig",
     "VoiceConfig",
+    "ActivationConfig",
+    "CommandsConfig",
+    "TranscriptionConfig",
+    "TranscriptionContextConfig",
+    "DebugConfig",
+    "PerformanceConfig",
+    "DesktopConfig",
+    "DesktopWindowConfig",
     "TUIConfig",
     "TTSConfig",
     "config_path",
@@ -34,4 +70,18 @@ __all__ = [
     "load_config",
     "save_config",
     "ASSISTANT_SYSTEM_PROMPT",
+    "AgentDecision",
+    "parse_agent_decision",
+    "CommandResult",
+    "ProposedCommand",
+    "is_blocked",
+    "requires_approval",
+    "run_command",
+    "VocabularyContext",
+    "build_vocabulary_context",
+    "TranscriptCandidate",
+    "build_initial_prompt",
+    "normalize_transcript",
+    "refine_transcript_if_enabled",
+    "Timer",
 ]
