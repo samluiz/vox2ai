@@ -1,3 +1,9 @@
+pub mod activation_backend;
+pub mod control_protocol;
+pub mod control_server;
+pub mod detection;
+pub mod gnome_bridge;
+
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -815,6 +821,199 @@ fn get_active_window_context() -> Result<Option<ActiveWindowContext>, String> {
     Ok(None)
 }
 
+#[tauri::command]
+fn get_desktop_session() -> detection::DesktopSession {
+    detection::detect_session()
+}
+
+#[tauri::command]
+fn get_activation_backend_status(
+    _app: AppHandle,
+    activation: tauri::State<'_, ActivationState>,
+) -> activation_backend::ActivationBackendStatus {
+    let session = detection::detect_session();
+    let kind = activation_backend::select_backend(&session);
+    let inner = activation.0.lock().unwrap();
+    let active = inner.shortcut.is_some() && inner.registration_error.is_none();
+    activation_backend::ActivationBackendStatus {
+        kind,
+        available: kind != activation_backend::ActivationBackendKind::Unsupported,
+        active,
+        session_type: format!("{:?}", session.session_type),
+        desktop: format!("{:?}", session.desktop),
+        shortcut: inner.shortcut.clone(),
+        message: activation_backend::backend_message(kind, &session),
+        details: inner.registration_error.clone().or_else(|| {
+            if kind == activation_backend::ActivationBackendKind::GnomeShortcutBridge {
+                Some("GNOME owns the keybinding. Configure via Settings → Keyboard → Custom Shortcuts.".to_string())
+            } else {
+                None
+            }
+        }),
+    }
+}
+
+#[tauri::command]
+fn get_gnome_bridge_status(app: AppHandle) -> Result<gnome_bridge::GnomeShortcutStatus, String> {
+    let cli_path = resolve_vox2aictl_path(&app)?;
+    let bridge = gnome_bridge::GnomeBridge::new(cli_path);
+    bridge.verify()
+}
+
+#[tauri::command]
+fn install_gnome_shortcut(
+    app: AppHandle,
+    shortcut: String,
+    behavior: String,
+) -> Result<gnome_bridge::GnomeShortcutStatus, String> {
+    let cli_path = resolve_vox2aictl_path(&app)?;
+    let bridge = gnome_bridge::GnomeBridge::new(cli_path);
+    bridge.install(&shortcut, &behavior)
+}
+
+#[tauri::command]
+fn remove_gnome_shortcut(app: AppHandle) -> Result<gnome_bridge::GnomeShortcutStatus, String> {
+    let cli_path = resolve_vox2aictl_path(&app)?;
+    let bridge = gnome_bridge::GnomeBridge::new(cli_path);
+    bridge.remove()
+}
+
+#[tauri::command]
+fn get_control_socket_path() -> String {
+    let server = control_server::ControlServer::new("vox2ai");
+    server.socket_path().display().to_string()
+}
+
+fn resolve_vox2aictl_path(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let sibling = parent.join("vox2aictl");
+            if sibling.is_file() {
+                return Ok(sibling);
+            }
+        }
+    }
+    if let Ok(dir) = app.path().resource_dir() {
+        let bundled = dir.join("binaries").join("vox2aictl");
+        if bundled.is_file() {
+            return Ok(bundled);
+        }
+    }
+    for candidate_dir in &["/usr/bin", "/usr/local/bin", "/usr/lib/vox2ai"] {
+        let candidate = PathBuf::from(candidate_dir).join("vox2aictl");
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    Err("vox2aictl command not found. Install the full vox2ai package.".to_string())
+}
+
+fn handle_control_command(
+    app: &AppHandle,
+    command: &control_protocol::ControlCommand,
+) -> control_protocol::ControlResponse {
+    use control_protocol::{ControlCommand as Cmd, SummonBehavior};
+
+    match command {
+        Cmd::Summon { behavior, .. } => {
+            match behavior {
+                SummonBehavior::ShowWidget => {
+                    show_widget(app, true);
+                    control_protocol::ControlResponse::ok("shown")
+                }
+                SummonBehavior::ShowAndRecord => {
+                    show_widget(app, true);
+                    let _ = app.emit("tray_start_recording", ());
+                    control_protocol::ControlResponse::ok("summoned and recording")
+                }
+                SummonBehavior::ShowAndFocusInput => {
+                    show_widget(app, true);
+                    let _ = app.emit("control_focus_input", ());
+                    control_protocol::ControlResponse::ok("summoned and focused input")
+                }
+                SummonBehavior::ToggleWidget => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let visible = window.is_visible().unwrap_or(false);
+                        if visible {
+                            let _ = window.hide();
+                            control_protocol::ControlResponse::ok("hidden")
+                        } else {
+                            show_widget(app, true);
+                            control_protocol::ControlResponse::ok("shown")
+                        }
+                    } else {
+                        control_protocol::ControlResponse::error("No window")
+                    }
+                }
+            }
+        }
+        Cmd::OpenSettings { .. } => {
+            show_widget(app, true);
+            let _ = app.emit("tray_open_settings", ());
+            control_protocol::ControlResponse::ok("opened settings")
+        }
+        Cmd::OpenDiagnostics { .. } => {
+            show_widget(app, true);
+            let _ = app.emit("tray_open_diagnostics", ());
+            control_protocol::ControlResponse::ok("opened diagnostics")
+        }
+        Cmd::StartRecording { .. } => {
+            show_widget(app, false);
+            let _ = app.emit("tray_start_recording", ());
+            control_protocol::ControlResponse::ok("recording")
+        }
+        Cmd::StopRecording { .. } => {
+            let _ = app.emit("control_stop_recording", ());
+            control_protocol::ControlResponse::ok("stopped")
+        }
+        Cmd::Cancel { .. } => {
+            let _ = app.emit("control_cancel", ());
+            control_protocol::ControlResponse::ok("cancelled")
+        }
+        Cmd::RestartBackend { .. } => {
+            if let Some(state) = app.try_state::<SidecarState>() {
+                let _ = app.emit("backend_restarting", ());
+                match restart_backend_impl(app.clone(), state.inner().clone()) {
+                    Ok(()) => control_protocol::ControlResponse::ok("restarting backend"),
+                    Err(e) => control_protocol::ControlResponse::error(e),
+                }
+            } else {
+                control_protocol::ControlResponse::error("Backend state unavailable")
+            }
+        }
+        Cmd::Status { .. } => {
+            let backend_state = app
+                .try_state::<SidecarState>()
+                .map(|s| {
+                    let inner = s.0.lock().unwrap();
+                    format!("{:?}", inner.runtime_state)
+                })
+                .unwrap_or_else(|| "unknown".to_string());
+            let connected = backend_state == "Running";
+            let recording = false; // frontend tracks this; best-effort
+            let visible = app
+                .get_webview_window("main")
+                .and_then(|w| w.is_visible().ok())
+                .unwrap_or(false);
+            let activation_kind = {
+                let session = detection::detect_session();
+                let kind = activation_backend::select_backend(&session);
+                format!("{:?}", kind)
+            };
+            control_protocol::ControlResponse::status(
+                control_protocol::AppStatusPayload {
+                    app: "running".to_string(),
+                    backend: backend_state,
+                    connected,
+                    recording,
+                    visible,
+                    activation_backend: activation_kind,
+                },
+            )
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -856,7 +1055,13 @@ pub fn run() {
             get_activation_runtime_status,
             get_backend_runtime_status,
             set_start_at_login,
-            get_active_window_context
+            get_active_window_context,
+            get_desktop_session,
+            get_activation_backend_status,
+            get_gnome_bridge_status,
+            install_gnome_shortcut,
+            remove_gnome_shortcut,
+            get_control_socket_path
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -870,6 +1075,16 @@ pub fn run() {
                 "Ctrl+Space".to_string(),
                 "show-and-record".to_string(),
             );
+
+            {
+                let app_handle = app.handle().clone();
+                let handler = Arc::new(move |cmd: control_protocol::ControlCommand| -> control_protocol::ControlResponse {
+                    handle_control_command(&app_handle, &cmd)
+                });
+                let server = control_server::ControlServer::new("vox2ai");
+                let _ = server.clean_stale_socket();
+                server.start(handler);
+            }
 
             let show = MenuItem::with_id(app, "show_widget", "Show widget", true, None::<&str>)?;
             let hide = MenuItem::with_id(app, "hide_widget", "Hide widget", true, None::<&str>)?;

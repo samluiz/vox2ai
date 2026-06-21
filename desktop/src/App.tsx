@@ -909,6 +909,17 @@ const App: React.FC = () => {
     const restartingPromise = listen("backend_restarting", () => {
       setStatus("Restarting backend...");
     });
+    const focusInputPromise = listen("control_focus_input", () => {
+      focusPromptInput();
+    });
+    const stopRecordingPromise = listen("control_stop_recording", () => {
+      if (isListening) {
+        stopRecording();
+      }
+    });
+    const cancelPromise = listen("control_cancel", () => {
+      cancelCurrentOperation();
+    });
     return () => {
       settingsPromise.then((fn) => fn());
       diagnosticsPromise.then((fn) => fn());
@@ -916,8 +927,11 @@ const App: React.FC = () => {
       globalShortcutPromise.then((fn) => fn());
       backendRuntimePromise.then((fn) => fn());
       restartingPromise.then((fn) => fn());
+      focusInputPromise.then((fn) => fn());
+      stopRecordingPromise.then((fn) => fn());
+      cancelPromise.then((fn) => fn());
     };
-  }, [handleGlobalActivation, handleReconnect, isBackendConnected, openDiagnostics, startRecording]);
+  }, [cancelCurrentOperation, focusPromptInput, handleGlobalActivation, handleReconnect, isBackendConnected, isListening, openDiagnostics, startRecording, stopRecording]);
 
   useEffect(() => {
     const onBeforeUnload = () => wsRef.current?.disconnect();

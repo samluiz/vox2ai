@@ -1,4 +1,5 @@
-import React from "react";
+import React, { useEffect, useState, useCallback } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import ShortcutRecorder from "./ShortcutRecorder";
 import { validateGlobalShortcut } from "../utils/shortcut";
 
@@ -20,6 +21,26 @@ export interface ActivationRuntimeStatus {
   start_at_login_enabled?: boolean;
 }
 
+interface ActivationBackendInfo {
+  kind: string;
+  available: boolean;
+  active: boolean;
+  session_type: string;
+  desktop: string;
+  shortcut: string | null;
+  message: string;
+  details: string | null;
+}
+
+interface GnomeBridgeStatus {
+  installed: boolean;
+  name: string;
+  command: string;
+  binding: string;
+  resolved_command: string | null;
+  error: string | null;
+}
+
 interface ActivationSettingsProps {
   general: Record<string, unknown>;
   activation: Record<string, unknown>;
@@ -32,6 +53,21 @@ interface ActivationSettingsProps {
   onDesktopWindowChange: (key: string, value: unknown) => void;
   onDesktopChange: (key: string, value: unknown) => void;
   onRestartBackend: () => void;
+}
+
+function backendKindLabel(kind: string): string {
+  switch (kind) {
+    case "X11GlobalHotkey":
+      return "Direct global shortcut";
+    case "GnomeShortcutBridge":
+      return "GNOME Shortcut Bridge";
+    case "XdgPortalGlobalShortcuts":
+      return "XDG Portal (experimental)";
+    case "Unsupported":
+      return "Unsupported";
+    default:
+      return kind;
+  }
 }
 
 const ActivationSettings: React.FC<ActivationSettingsProps> = ({
@@ -51,6 +87,85 @@ const ActivationSettings: React.FC<ActivationSettingsProps> = ({
   const registrationError = activationRuntimeStatus?.error;
   const shortcutSupported = activationRuntimeStatus?.global_shortcut_supported ?? true;
   const shortcutMessage = activationRuntimeStatus?.message;
+
+  const [backendInfo, setBackendInfo] = useState<ActivationBackendInfo | null>(null);
+  const [bridgeStatus, setBridgeStatus] = useState<GnomeBridgeStatus | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [removing, setRemoving] = useState(false);
+
+  const refreshBackendInfo = useCallback(async () => {
+    try {
+      const info = (await invoke("get_activation_backend_status")) as ActivationBackendInfo;
+      setBackendInfo(info);
+    } catch {
+      // Tauri invoke not available in dev mode
+    }
+  }, []);
+
+  const refreshBridgeStatus = useCallback(async () => {
+    try {
+      const status = (await invoke("get_gnome_bridge_status")) as GnomeBridgeStatus;
+      setBridgeStatus(status);
+    } catch {
+      // Tauri invoke not available in dev mode
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshBackendInfo();
+    refreshBridgeStatus();
+  }, [refreshBackendInfo, refreshBridgeStatus]);
+
+  const handleInstallBridge = useCallback(async () => {
+    setInstalling(true);
+    try {
+      const shortcut = (activation.global_shortcut as string) ?? "Ctrl+Space";
+      const behavior = (activation.shortcut_behavior as string) ?? "show-and-record";
+      const result = (await invoke("install_gnome_shortcut", {
+        shortcut,
+        behavior,
+      })) as GnomeBridgeStatus;
+      setBridgeStatus(result);
+      await refreshBackendInfo();
+    } catch (e) {
+      setBridgeStatus({
+        installed: false,
+        name: "",
+        command: "",
+        binding: "",
+        resolved_command: null,
+        error: String(e),
+      });
+    }
+    setInstalling(false);
+  }, [activation, refreshBackendInfo]);
+
+  const handleRemoveBridge = useCallback(async () => {
+    setRemoving(true);
+    try {
+      const result = (await invoke("remove_gnome_shortcut")) as GnomeBridgeStatus;
+      setBridgeStatus(result);
+      await refreshBackendInfo();
+    } catch (e) {
+      setBridgeStatus({
+        installed: false,
+        name: "",
+        command: "",
+        binding: "",
+        resolved_command: null,
+        error: String(e),
+      });
+    }
+    setRemoving(false);
+  }, [refreshBackendInfo]);
+
+  const isWayland = backendInfo?.session_type === "Wayland";
+  const isGnome = backendInfo?.desktop === "Gnome";
+  const backendKind = backendInfo?.kind ?? "Unsupported";
+  const showGnomeBridge = isWayland && isGnome;
+
+  const manualFallbackCommand =
+    (bridgeStatus?.resolved_command ?? "vox2aictl") + " summon --record";
 
   return (
     <div className="activation-settings">
@@ -98,32 +213,77 @@ const ActivationSettings: React.FC<ActivationSettingsProps> = ({
       </div>
 
       <div className="settings-subsection">
-        <h4>Global Shortcut</h4>
-        <p className="settings-desc">This shortcut works from other apps, even when vox2ai is hidden.</p>
-        <ShortcutRecorder
-          value={(activation.global_shortcut as string) ?? "Ctrl+Space"}
-          onChange={(next) => onActivationChange("global_shortcut", next)}
-          validate={validateGlobalShortcut}
-        />
-        {activationRuntimeStatus?.registered ? (
-          <div className="runtime-ok">
-            Registered globally
-            {activationRuntimeStatus?.platform ? (
-              <span> · {activationRuntimeStatus.platform}</span>
-            ) : null}
-          </div>
-        ) : !shortcutSupported ? (
+        <h4>Global Activation</h4>
+        <p className="settings-desc">
+          Configure how vox2ai responds to the activation shortcut.
+        </p>
+
+        <div className="settings-status-row">
+          <span>Session</span>
+          <strong>
+            {backendInfo
+              ? `${backendInfo.desktop} / ${backendInfo.session_type}`
+              : "Detecting..."}
+          </strong>
+        </div>
+        <div className="settings-status-row">
+          <span>Backend</span>
+          <strong>{backendKindLabel(backendKind)}</strong>
+        </div>
+
+        {isWayland && (
           <div className="runtime-warning">
-            <strong>Unavailable on this session.</strong>
-            <span>{shortcutMessage || registrationError}</span>
-          </div>
-        ) : (
-          <div className="form-error">
-            {registrationError || "Shortcut will be registered after saving."}
+            <strong>Wayland session detected.</strong>
+            <span>
+              {isGnome
+                ? "Direct global shortcuts are unavailable on Wayland. Use the GNOME Shortcut Bridge below."
+                : "Global shortcuts are not available on this Wayland compositor. Configure a system-level shortcut manually."}
+            </span>
           </div>
         )}
+
+        {backendInfo && backendInfo.active && (
+          <div className="runtime-ok">
+            Shortcut active
+            {backendInfo.shortcut ? <span> · {backendInfo.shortcut}</span> : null}
+          </div>
+        )}
+
+        {backendInfo?.message && !backendInfo.active && (
+          <div className="runtime-info">
+            <span>{backendInfo.message}</span>
+          </div>
+        )}
+
+        {!isWayland && (
+          <>
+            <ShortcutRecorder
+              value={(activation.global_shortcut as string) ?? "Ctrl+Space"}
+              onChange={(next) => onActivationChange("global_shortcut", next)}
+              validate={validateGlobalShortcut}
+            />
+            {activationRuntimeStatus?.registered ? (
+              <div className="runtime-ok">
+                Registered globally
+                {activationRuntimeStatus?.platform ? (
+                  <span> · {activationRuntimeStatus.platform}</span>
+                ) : null}
+              </div>
+            ) : !shortcutSupported ? (
+              <div className="runtime-warning">
+                <strong>Unavailable on this session.</strong>
+                <span>{shortcutMessage || registrationError}</span>
+              </div>
+            ) : (
+              <div className="form-error">
+                {registrationError || "Shortcut will be registered after saving."}
+              </div>
+            )}
+          </>
+        )}
+
         <div className="form-group">
-          <label className="form-label">Behavior</label>
+          <label className="form-label">Shortcut behavior</label>
           <select
             className="form-select"
             value={(activation.shortcut_behavior as string) ?? "show-and-record"}
@@ -136,6 +296,103 @@ const ActivationSettings: React.FC<ActivationSettingsProps> = ({
           </select>
         </div>
       </div>
+
+      {showGnomeBridge && (
+        <div className="settings-subsection">
+          <h4>GNOME Shortcut Bridge</h4>
+          <p className="settings-desc">
+            GNOME owns the global keybinding. vox2ai installs a custom shortcut that
+            calls vox2aictl to control the running app.
+          </p>
+
+          <div className="settings-status-row">
+            <span>Status</span>
+            <strong>
+              {bridgeStatus === null
+                ? "Checking..."
+                : bridgeStatus.installed
+                  ? "Installed"
+                  : "Not installed"}
+            </strong>
+          </div>
+
+          {bridgeStatus?.installed && (
+            <>
+              <div className="settings-status-row">
+                <span>Command</span>
+                <code className="settings-code">{bridgeStatus.command}</code>
+              </div>
+              <div className="settings-status-row">
+                <span>Binding</span>
+                <code className="settings-code">{bridgeStatus.binding}</code>
+              </div>
+            </>
+          )}
+
+          {bridgeStatus?.error && (
+            <div className="form-error">{bridgeStatus.error}</div>
+          )}
+
+          <div className="form-actions">
+            {bridgeStatus?.installed ? (
+              <button
+                className="form-btn form-btn-secondary"
+                onClick={handleRemoveBridge}
+                disabled={removing}
+              >
+                {removing ? "Removing..." : "Remove GNOME Shortcut"}
+              </button>
+            ) : (
+              <button
+                className="form-btn form-btn-primary"
+                onClick={handleInstallBridge}
+                disabled={installing}
+              >
+                {installing
+                  ? "Installing..."
+                  : bridgeStatus !== null
+                    ? "Reinstall GNOME Shortcut"
+                    : "Install GNOME Shortcut"}
+              </button>
+            )}
+          </div>
+
+          <details className="settings-details">
+            <summary>Manual fallback</summary>
+            <p className="settings-desc">
+              If automatic installation fails, create a GNOME custom shortcut manually:
+            </p>
+            <div className="settings-fallback">
+              <div className="settings-status-row">
+                <span>Name</span>
+                <code className="settings-code">vox2ai</code>
+              </div>
+              <div className="settings-status-row">
+                <span>Command</span>
+                <code className="settings-code">{manualFallbackCommand}</code>
+              </div>
+              <div className="settings-status-row">
+                <span>Shortcut</span>
+                <code className="settings-code">
+                  {(activation.global_shortcut as string) ?? "Ctrl+Space"}
+                </code>
+              </div>
+            </div>
+          </details>
+        </div>
+      )}
+
+      {!showGnomeBridge && backendKind === "Unsupported" && (
+        <div className="settings-subsection">
+          <h4>Manual shortcut</h4>
+          <p className="settings-desc">
+            Configure a system-level shortcut manually to run:
+          </p>
+          <div className="settings-fallback">
+            <code className="settings-code">{manualFallbackCommand}</code>
+          </div>
+        </div>
+      )}
 
       <div className="settings-subsection">
         <h4>Window</h4>

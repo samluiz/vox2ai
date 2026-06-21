@@ -8,6 +8,11 @@ edition = "2021"
 name = "vox2ai_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "vox2aictl"
+path = "src/bin/vox2aictl.rs"
+required-features = ["cli"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -16,3 +21,7 @@ tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[features]
+default = ["cli"]
+cli = []

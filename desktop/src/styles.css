@@ -430,6 +430,50 @@ body {
   font-weight: 650;
 }
 
+.settings-code {
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 11px;
+  color: rgba(139, 156, 255, 0.9);
+  background: rgba(255, 255, 255, 0.06);
+  padding: 3px 7px;
+  border-radius: 5px;
+  word-break: break-all;
+}
+
+.settings-details {
+  margin-top: 14px;
+  color: rgba(255, 255, 255, 0.56);
+  font-size: 12px;
+}
+
+.settings-details summary {
+  cursor: pointer;
+  color: rgba(139, 156, 255, 0.78);
+  font-weight: 560;
+}
+
+.settings-details summary:hover {
+  color: rgba(139, 156, 255, 0.94);
+}
+
+.settings-fallback {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.runtime-info {
+  margin-bottom: 14px;
+  padding: 8px 11px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .settings-section-title {
   font-size: 18px;
   font-weight: 700;

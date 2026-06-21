@@ -1,4 +1,5 @@
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import type { WebSocketClient } from "../api/websocket";
 import type { BackendConnectionState } from "../api/websocket";
 import CopyButton from "./CopyButton";
@@ -23,6 +24,27 @@ function statusValue(value: unknown, fallback = "unknown"): string {
   return fallback;
 }
 
+interface DesktopSessionInfo {
+  session_type: string;
+  desktop: string;
+  xdg_session_type: string | null;
+  wayland_display: string | null;
+  display: string | null;
+  xdg_current_desktop: string | null;
+  desktop_session: string | null;
+}
+
+interface ActivationBackendInfo {
+  kind: string;
+  available: boolean;
+  active: boolean;
+  session_type: string;
+  desktop: string;
+  shortcut: string | null;
+  message: string;
+  details: string | null;
+}
+
 const DiagnosticsWindow: React.FC<DiagnosticsWindowProps> = ({
   ws,
   diagnostics,
@@ -31,6 +53,22 @@ const DiagnosticsWindow: React.FC<DiagnosticsWindowProps> = ({
   onRestartBackend,
 }) => {
   useLargeOverlayWindow();
+
+  const [sessionInfo, setSessionInfo] = useState<DesktopSessionInfo | null>(null);
+  const [backendInfo, setBackendInfo] = useState<ActivationBackendInfo | null>(null);
+  const [socketPath, setSocketPath] = useState<string | null>(null);
+
+  useEffect(() => {
+    invoke("get_desktop_session")
+      .then((info) => setSessionInfo(info as DesktopSessionInfo))
+      .catch(() => undefined);
+    invoke("get_activation_backend_status")
+      .then((info) => setBackendInfo(info as ActivationBackendInfo))
+      .catch(() => undefined);
+    invoke("get_control_socket_path")
+      .then((path) => setSocketPath(path as string))
+      .catch(() => undefined);
+  }, []);
 
   const backend = record(diagnostics?.backend);
   const provider = record(diagnostics?.provider);
@@ -55,6 +93,8 @@ const DiagnosticsWindow: React.FC<DiagnosticsWindowProps> = ({
           paths,
           app,
           backend_version: diagnostics?.backend_version ?? "unknown",
+          session: sessionInfo ? { session_type: sessionInfo.session_type, desktop: sessionInfo.desktop } : "detecting",
+          activation_backend: backendInfo ? { kind: backendInfo.kind, active: backendInfo.active, message: backendInfo.message } : "detecting",
         },
         null,
         2
@@ -70,6 +110,8 @@ const DiagnosticsWindow: React.FC<DiagnosticsWindowProps> = ({
       shortcut,
       activation,
       transcription,
+      sessionInfo,
+      backendInfo,
     ]
   );
 
@@ -83,6 +125,9 @@ const DiagnosticsWindow: React.FC<DiagnosticsWindowProps> = ({
     ["Shortcut", `${statusValue(shortcut.shortcut)} · ${statusValue(shortcut.mode)}`],
     ["Global shortcut", `${statusValue(activation.global_shortcut)} · ${statusValue(activation.shortcut_behavior)}`],
     ["Transcription", `${statusValue(transcription.status)} · ${statusValue(transcription.model)}`],
+    ["Session", sessionInfo ? `${sessionInfo.desktop} / ${sessionInfo.session_type}` : "detecting..."],
+    ["Activation backend", backendInfo ? `${backendInfo.kind} · ${backendInfo.active ? "active" : "inactive"}` : "detecting..."],
+    ["Control socket", statusValue(socketPath)],
     ["Logs path", statusValue(paths.logs)],
     ["Config path", statusValue(paths.config)],
     ["App version", statusValue(app.version)],
@@ -113,6 +158,12 @@ const DiagnosticsWindow: React.FC<DiagnosticsWindowProps> = ({
 
         {Boolean(microphone.message) && (
           <div className="diagnostic-note">{String(microphone.message)}</div>
+        )}
+
+        {backendInfo && !backendInfo.available && (
+          <div className="diagnostic-note">
+            {backendInfo.message}
+          </div>
         )}
 
         <div className="diagnostic-actions">

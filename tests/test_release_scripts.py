@@ -26,14 +26,22 @@ def test_version_metadata_is_consistent() -> None:
 def test_sidecar_destination_name_linux() -> None:
     copy_sidecar = _load_script("copy_sidecar.py")
     assert (
-        copy_sidecar.sidecar_destination_name(system="Linux", machine="x86_64")
+        copy_sidecar.destination_name("vox2ai-server", system="Linux", machine="x86_64")
         == "vox2ai-server-x86_64-unknown-linux-gnu"
+    )
+    assert (
+        copy_sidecar.destination_name("vox2aictl", system="Linux", machine="x86_64")
+        == "vox2aictl-x86_64-unknown-linux-gnu"
     )
 
 
 def test_sidecar_destination_name_windows() -> None:
     copy_sidecar = _load_script("copy_sidecar.py")
-    assert (
-        copy_sidecar.sidecar_destination_name(system="Windows", machine="AMD64", windows=True)
-        == "vox2ai-server-x86_64-pc-windows-msvc.exe"
+    name = copy_sidecar.destination_name(
+        "vox2ai-server", system="Windows", machine="AMD64", windows=True
     )
+    assert name == "vox2ai-server-x86_64-pc-windows-msvc.exe"
+    name2 = copy_sidecar.destination_name(
+        "vox2aictl", system="Windows", machine="AMD64", windows=True
+    )
+    assert name2 == "vox2aictl-x86_64-pc-windows-msvc.exe"
