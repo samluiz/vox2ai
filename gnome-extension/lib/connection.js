@@ -31,17 +31,15 @@ export const Connection = class Connection {
 
         try {
             this._session = new Soup.Session();
-            const uri = Soup.URI.new(`ws://${this._host}:${this._port}`);
 
-            Soup.WebsocketConnection.connect_async(
-                this._session,
-                uri,
+            this._session.websocket_connect_async(
+                `ws://${this._host}:${this._port}`,
                 null,    // origin
                 null,    // protocols
                 null,    // cancellable
                 (source, result) => {
                     try {
-                        this._ws = Soup.WebsocketConnection.connect_finish(result);
+                        this._ws = this._session.websocket_connect_finish(result);
                         this._setState('connected');
                         this._reconnectAttempts = 0;
 
