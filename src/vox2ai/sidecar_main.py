@@ -1,8 +1,7 @@
-"""Standalone entrypoint for the vox2ai desktop sidecar.
+"""Standalone entrypoint for the vox2ai backend server.
 
-Started by the Tauri app as an external binary. Prints a machine-readable
-``server_ready`` JSON event to stdout once the WebSocket server is listening,
-then runs until terminated.
+Prints a machine-readable ``server_ready`` JSON event to stdout once the
+WebSocket server is listening, then runs until terminated.
 """
 
 from __future__ import annotations
@@ -31,8 +30,8 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config()
-    config.desktop.host = args.host
-    config.desktop.port = args.port
+    config.backend_service.host = args.host
+    config.backend_service.port = args.port
 
     async def _run() -> None:
         from vox2ai.desktop_server import DesktopServer
@@ -53,7 +52,7 @@ def main() -> None:
             "host": args.host,
             "port": bound_port,
         }
-        # Write to stdout so the Tauri sidecar manager can read it.
+        # Write to stdout so the service manager can read it.
         print(json.dumps(ready), flush=True)
 
         await asyncio.Future()  # run forever

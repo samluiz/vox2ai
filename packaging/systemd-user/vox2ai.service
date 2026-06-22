@@ -1,0 +1,14 @@
+[Unit]
+Description=vox2ai backend service
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/vox2ai server --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=2
+Environment=VOX2AI_SERVICE=1
+
+[Install]
+WantedBy=default.target

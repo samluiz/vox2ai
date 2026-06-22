@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import shutil
-import subprocess
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
@@ -886,8 +884,8 @@ class DesktopServer:
     async def start(self) -> None:
         import websockets
 
-        host = self._config.desktop.host
-        port = self._config.desktop.port
+        host = self._config.backend_service.host
+        port = self._config.backend_service.port
 
         self._server = await websockets.serve(  # type: ignore[assignment]
             self._handle_client,
@@ -1047,15 +1045,15 @@ def _apply_settings_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig
             if hasattr(updated.quick_actions, k):
                 setattr(updated.quick_actions, k, v)
 
-    if "desktop_window" in patch:
-        for k, v in patch["desktop_window"].items():
-            if hasattr(updated.desktop_window, k):
-                setattr(updated.desktop_window, k, v)
+    if "backend_service" in patch:
+        for k, v in patch["backend_service"].items():
+            if hasattr(updated.backend_service, k):
+                setattr(updated.backend_service, k, v)
 
-    if "desktop" in patch:
-        for k, v in patch["desktop"].items():
-            if hasattr(updated.desktop, k):
-                setattr(updated.desktop, k, v)
+    if "gnome" in patch:
+        for k, v in patch["gnome"].items():
+            if hasattr(updated.gnome, k):
+                setattr(updated.gnome, k, v)
 
     if "debug" in patch:
         for k, v in patch["debug"].items():
@@ -1065,37 +1063,4 @@ def _apply_settings_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig
     return AppConfig.model_validate(updated.model_dump())
 
 
-def launch_frontend() -> None:
-    """Launch the Tauri desktop app (best-effort)."""
-    desktop_dir = Path(__file__).resolve().parent.parent.parent / "desktop"
-    if not desktop_dir.exists():
-        print("[vox2ai] Frontend directory not found at desktop/", flush=True)
-        return
 
-    if not (desktop_dir / "node_modules").is_dir():
-        print("[vox2ai] node_modules/ not found. Run: cd desktop && npm install", flush=True)
-
-    # Check for required tooling.
-    if shutil.which("cargo") is None:
-        print(
-            "[vox2ai] Rust/Cargo not found. Install from https://rustup.rs, "
-            "then run: cd desktop && npm install && npm run tauri dev",
-            flush=True,
-        )
-        return
-    if shutil.which("npm") is None:
-        print(
-            "[vox2ai] npm not found. Install Node.js via your package manager "
-            "or https://nodejs.org",
-            flush=True,
-        )
-        return
-
-    try:
-        proc = subprocess.Popen(
-            ["npm", "run", "tauri", "dev"],
-            cwd=str(desktop_dir),
-        )
-        print(f"[vox2ai] Tauri frontend started (PID {proc.pid})", flush=True)
-    except Exception as exc:
-        print(f"[vox2ai] Failed to launch frontend: {exc}", flush=True)

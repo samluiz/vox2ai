@@ -49,9 +49,10 @@ def test_default_config_creation() -> None:
     assert "[conversation]" in content
     assert "[context]" in content
     assert "[quick_actions]" in content
-    assert "[desktop_window]" in content
-    assert 'summon_position = "active-monitor-top-center"' in content
-    assert "auto_hide_after_answer = false" in content
+    assert "[backend_service]" in content
+    assert 'host = "127.0.0.1"' in content
+    assert "auto_start = true" in content
+    assert "[gnome]" in content
     assert "[transcription.partial]" in content
 
 
@@ -146,13 +147,11 @@ def test_app_config_defaults() -> None:
     assert cfg.voice.whisper_model == "small"
     assert cfg.recording.activation_mode == "hold-to-talk"
     assert cfg.recording.shortcut == "Ctrl"
-    assert cfg.desktop_window.user_resizable is True
-    assert cfg.desktop_window.remember_size is True
-    assert cfg.desktop_window.remember_position is True
-    assert cfg.desktop_window.summon_position == "active-monitor-top-center"
-    assert cfg.desktop_window.auto_hide_after_answer is False
-    assert cfg.desktop_window.auto_hide_delay_ms == 2500
-    assert cfg.desktop_window.manual_size is False
+    assert cfg.backend_service.host == "127.0.0.1"
+    assert cfg.backend_service.port == 8765
+    assert cfg.backend_service.auto_start is True
+    assert cfg.gnome.show_panel_indicator is True
+    assert cfg.gnome.compact_density is True
     assert cfg.general.minimize_to_tray is True
     assert cfg.general.start_hidden is True
     assert cfg.general.start_at_login is False

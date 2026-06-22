@@ -1,0 +1,232 @@
+/* vox2ai GNOME Shell Extension - stylesheet */
+
+.vox2ai-indicator {
+  padding: 0 8px;
+}
+
+.vox2ai-indicator-label {
+  font-weight: 500;
+  font-size: 11px;
+}
+
+/* Assistant popover */
+.vox2ai-assistant {
+  width: 380px;
+  padding: 0;
+}
+
+.vox2ai-header {
+  padding: 10px 12px 6px;
+  font-weight: 600;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.9);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.vox2ai-status-bar {
+  padding: 4px 12px 8px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.vox2ai-body {
+  padding: 8px 12px;
+  min-height: 60px;
+}
+
+/* State messages */
+.vox2ai-state-message {
+  padding: 12px 8px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 12px;
+}
+
+.vox2ai-state-error {
+  color: #ff5a64;
+}
+
+/* Waveform */
+.vox2ai-waveform {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  height: 36px;
+  padding: 4px 0;
+}
+
+.vox2ai-waveform-bar {
+  width: 3px;
+  border-radius: 2px;
+  background: #8b9cff;
+  min-height: 3px;
+  transition: height 80ms ease-out;
+}
+
+/* Transcript area */
+.vox2ai-transcript-area {
+  padding: 4px 0;
+}
+
+.vox2ai-transcript {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.82);
+  padding: 4px 0;
+  line-height: 1.4;
+}
+
+.vox2ai-partial-transcript {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+  font-style: italic;
+  padding: 2px 0;
+}
+
+/* Answer area */
+.vox2ai-answer {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.88);
+  padding: 4px 0;
+  line-height: 1.5;
+}
+
+.vox2ai-answer-cursor {
+  animation: blink 0.8s step-end infinite;
+}
+
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+/* Message rows (user + assistant) */
+.vox2ai-message-row {
+  padding: 3px 0;
+}
+
+.vox2ai-message-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: rgba(255, 255, 255, 0.35);
+  padding-bottom: 2px;
+}
+
+.vox2ai-message-content {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.85);
+  line-height: 1.45;
+}
+
+/* Command approval */
+.vox2ai-command-approval {
+  padding: 6px 0;
+}
+
+.vox2ai-command-block {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 4px 0;
+  font-family: monospace;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.9);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.vox2ai-risk-indicator {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 0;
+}
+
+.vox2ai-risk-low { color: #4ade80; }
+.vox2ai-risk-medium { color: #facc15; }
+.vox2ai-risk-high { color: #ff5a64; }
+
+.vox2ai-approval-detail {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  padding: 2px 0;
+}
+
+/* Buttons */
+.vox2ai-btn-row {
+  display: flex;
+  gap: 6px;
+  padding: 6px 0;
+}
+
+.vox2ai-btn {
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  border: none;
+  cursor: pointer;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.vox2ai-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.vox2ai-btn-primary {
+  background: #8b9cff;
+  color: #000;
+}
+
+.vox2ai-btn-primary:hover {
+  background: #a0b0ff;
+}
+
+.vox2ai-btn-danger {
+  background: rgba(255, 90, 100, 0.2);
+  color: #ff5a64;
+}
+
+.vox2ai-btn-danger:hover {
+  background: rgba(255, 90, 100, 0.3);
+}
+
+.vox2ai-btn-cancel {
+  background: transparent;
+  color: rgba(255, 255, 255, 0.5);
+  padding: 5px 8px;
+}
+
+.vox2ai-btn-cancel:hover {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.vox2ai-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Status dot */
+.vox2ai-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+}
+
+.vox2ai-status-dot-ok { background: #4ade80; }
+.vox2ai-status-dot-recording { background: #ff5a64; animation: pulse 1.2s ease-in-out infinite; }
+.vox2ai-status-dot-warn { background: #facc15; }
+.vox2ai-status-dot-off { background: rgba(255, 255, 255, 0.2); }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Panel menu */
+.vox2ai-panel-menu .popup-menu-item {
+  padding: 6px 12px;
+}

@@ -9,10 +9,10 @@ from vox2ai.tui import Vox2aiApp
 @click.group(invoke_without_command=True)
 @click.pass_context
 def cli(ctx: click.Context) -> None:
-    """vox2ai — desktop/terminal voice assistant for Linux.
+    """vox2ai — voice and text AI assistant for GNOME/Linux.
 
-    Default: launch the terminal TUI (works everywhere).
-    Use 'vox2ai desktop' for the native desktop app (requires Rust/Node).
+    Default: launch the terminal TUI.
+    Use 'vox2ai server' for the WebSocket backend (used by the GNOME extension).
     """
     if ctx.invoked_subcommand is None:
         _run_tui()
@@ -60,22 +60,10 @@ def tui() -> None:
 @click.option("--host", default=None, help="Bind address (default: 127.0.0.1)")
 @click.option("--port", type=int, default=None, help="Port number (0 = random free port)")
 def server(host: str | None, port: int | None) -> None:
-    """Start the WebSocket backend server for the desktop frontend."""
+    """Start the WebSocket backend server for the GNOME Shell extension."""
     from vox2ai.desktop_server import run_server
 
     run_server(host=host, port=port)
-
-
-@cli.command()
-def desktop() -> None:
-    """Start the WebSocket backend and launch the Tauri desktop app."""
-    import threading
-
-    from vox2ai.desktop_server import launch_frontend, run_server
-
-    t = threading.Thread(target=launch_frontend, daemon=True)
-    t.start()
-    run_server()
 
 
 @cli.command(name="config-path")

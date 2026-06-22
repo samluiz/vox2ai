@@ -1,0 +1,9 @@
+{
+  "uuid": "vox2ai@samluiz.com",
+  "name": "vox2ai",
+  "description": "GNOME-native voice and text AI assistant",
+  "version": 1,
+  "shell-version": ["47", "48", "49", "50"],
+  "settings-schema": "org.gnome.shell.extensions.vox2ai",
+  "url": "https://github.com/samluiz/vox2ai"
+}

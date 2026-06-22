@@ -131,28 +131,14 @@ selected_text_enabled = false
 [quick_actions]
 enabled = true
 
-[desktop_window]
-user_resizable = true
-remember_size = true
-remember_position = true
-manual_size = false
-width = 520
-height = 160
-position = "top-center"
-summon_position = "active-monitor-top-center"
-always_on_top = true
-transparent = true
-auto_hide_after_answer = false
-auto_hide_delay_ms = 2500
-inactive_opacity = 0.08
-active_opacity = 0.98
-fade_after_seconds = 8
-
-[desktop]
+[backend_service]
 host = "127.0.0.1"
 port = 8765
-auto_launch_frontend = true
-auto_restart_backend = true
+auto_start = true
+
+[gnome]
+show_panel_indicator = true
+compact_density = true
 
 [debug]
 enabled = false
@@ -504,44 +490,15 @@ class QuickActionsConfig(BaseModel):
     enabled: bool = True
 
 
-class DesktopConfig(BaseModel):
+class BackendServiceConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8765
-    auto_launch_frontend: bool = True
-    auto_restart_backend: bool = True
+    auto_start: bool = True
 
 
-class DesktopWindowConfig(BaseModel):
-    user_resizable: bool = True
-    remember_size: bool = True
-    remember_position: bool = True
-    manual_size: bool = False
-    width: int = 520
-    height: int = 160
-    position: str = "top-center"
-    summon_position: str = "active-monitor-top-center"
-    always_on_top: bool = True
-    transparent: bool = True
-    auto_hide_after_answer: bool = False
-    auto_hide_delay_ms: int = 2500
-    inactive_opacity: float = 0.08
-    active_opacity: float = 0.98
-    fade_after_seconds: int = 8
-
-    @field_validator("summon_position")
-    @classmethod
-    def validate_summon_position(cls, v: str) -> str:
-        allowed = {"active-monitor-top-center", "primary-monitor-top-center", "remembered"}
-        if v not in allowed:
-            raise ValueError(f"desktop_window.summon_position must be one of {allowed}")
-        return v
-
-    @field_validator("auto_hide_delay_ms")
-    @classmethod
-    def validate_auto_hide_delay(cls, v: int) -> int:
-        if v < 0:
-            raise ValueError("desktop_window.auto_hide_delay_ms must be non-negative")
-        return v
+class GnomeConfig(BaseModel):
+    show_panel_indicator: bool = True
+    compact_density: bool = True
 
 
 class DebugConfig(BaseModel):
@@ -559,8 +516,8 @@ class AppConfig(BaseModel):
     overlay: OverlayConfig = Field(default_factory=OverlayConfig)
     commands: CommandsConfig = Field(default_factory=CommandsConfig)
     performance: PerformanceConfig = Field(default_factory=PerformanceConfig)
-    desktop: DesktopConfig = Field(default_factory=DesktopConfig)
-    desktop_window: DesktopWindowConfig = Field(default_factory=DesktopWindowConfig)
+    backend_service: BackendServiceConfig = Field(default_factory=BackendServiceConfig)
+    gnome: GnomeConfig = Field(default_factory=GnomeConfig)
     tui: TUIConfig = Field(default_factory=TUIConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     general: GeneralConfig = Field(default_factory=GeneralConfig)

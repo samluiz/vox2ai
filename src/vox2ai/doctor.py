@@ -105,16 +105,14 @@ def run_doctor() -> None:
 
     # 11. WebSocket port
     if config_ok and config is not None:
-        _check("WebSocket server", True, f"{config.desktop.host}:{config.desktop.port}")
+        addr = f"{config.backend_service.host}:{config.backend_service.port}"
+        _check("WebSocket server", True, addr)
 
     # 12. Logging path
     _check("Log directory", True, str(_log_dir()))
 
-    # 13. Sidecar binary (production build)
-    _check_sidecar_binary()
-
-    # 14. Desktop frontend (Tauri)
-    _check_desktop_frontend()
+    # 13. Backend binary
+    _check("Backend binary", True, "From pip package (vox2ai)")
 
     # Summary table
     table = Table.grid(padding=(0, 1))
@@ -133,7 +131,7 @@ def run_doctor() -> None:
             "[bold]Transcript refiner[/bold]",
             f"{'on' if config.transcription.refine else 'off'} ({config.transcription.refine_mode})",  # noqa: E501
         )
-        table.add_row("[bold]Desktop UI[/bold]", "Tauri")
+        table.add_row("[bold]Desktop UI[/bold]", "GNOME Shell Extension")
         table.add_row("[bold]Activation[/bold]", config.activation.backend)
         table.add_row("[bold]Command mode[/bold]", config.commands.mode)
         table.add_row("[bold]Preload Whisper[/bold]", str(config.performance.preload_whisper))
@@ -157,20 +155,6 @@ def _log_dir() -> Path:
     from platformdirs import user_state_dir
 
     return Path(user_state_dir("vox2ai", ensure_exists=True))
-
-
-def _check_sidecar_binary() -> None:
-    sidecar_dir = (
-        Path(__file__).resolve().parent.parent.parent / "desktop" / "src-tauri" / "binaries"
-    )
-    if sidecar_dir.is_dir():
-        binaries = list(sidecar_dir.glob("vox2ai-server*"))
-        if binaries:
-            _check("Sidecar binary", True, binaries[0].name)
-        else:
-            _check("Sidecar binary", False, "Not found (run python scripts/build_sidecar.py)")
-    else:
-        _check("Sidecar binary", True, "N/A (source not available)")
 
 
 def _check_audio_devices() -> None:
@@ -237,26 +221,4 @@ def _check_evdev() -> None:
         _check("Global key capture (evdev)", True, str(e))
 
 
-def _check_desktop_frontend() -> None:
-    desktop_dir = Path(__file__).resolve().parent.parent.parent / "desktop"
-    if desktop_dir.is_dir() and (desktop_dir / "package.json").is_file():
-        _check("Desktop frontend (Tauri)", True, str(desktop_dir))
-        try:
-            import subprocess
 
-            subprocess.run(["node", "--version"], capture_output=True, timeout=5)
-            _check("Node.js", True, "available")
-        except (FileNotFoundError, Exception):
-            _check("Node.js", False, "not found (needed for Tauri frontend)")
-        try:
-            subprocess.run(["npm", "--version"], capture_output=True, timeout=5)
-            _check("npm", True, "available")
-        except (FileNotFoundError, Exception):
-            _check("npm", False, "not found (needed for Tauri dev)")
-        try:
-            subprocess.run(["cargo", "--version"], capture_output=True, timeout=10)
-            _check("Rust/Cargo", True, "available")
-        except (FileNotFoundError, Exception):
-            _check("Rust/Cargo", False, "not found (needed to build Tauri app)")
-    else:
-        _check("Desktop frontend (Tauri)", False, "Not found at desktop/")
