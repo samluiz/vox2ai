@@ -12,7 +12,6 @@ export const Connection = class Connection {
         this._reconnectTimer = null;
         this._reconnectAttempts = 0;
         this._maxReconnectDelay = 30;
-        this._maxAttempts = 10;
         this._disposed = false;
         this._listeners = new Set();
         this._state = 'disconnected';
@@ -31,12 +30,18 @@ export const Connection = class Connection {
 
         try {
             this._session = new Soup.Session();
+            const uri = GLib.Uri.parse(
+                `ws://${this._host}:${this._port}`,
+                GLib.UriFlags.NONE
+            );
+            const msg = new Soup.Message({method: 'GET', uri});
 
             this._session.websocket_connect_async(
-                `ws://${this._host}:${this._port}`,
-                null,    // origin
-                null,    // protocols
-                null,    // cancellable
+                msg,
+                null,               // origin
+                null,               // protocols
+                GLib.PRIORITY_DEFAULT,
+                null,               // cancellable
                 (source, result) => {
                     try {
                         this._ws = this._session.websocket_connect_finish(result);
@@ -45,10 +50,12 @@ export const Connection = class Connection {
 
                         this._ws.connect('message', (ws, type, data) => {
                             try {
+                                let text = '';
                                 if (type === Soup.WebsocketDataType.TEXT) {
-                                    const text = data instanceof Uint8Array
-                                        ? new TextDecoder().decode(data)
-                                        : String(data);
+                                    if (data instanceof Uint8Array)
+                                        text = new TextDecoder().decode(data);
+                                    else
+                                        text = String(data);
                                     const parsed = JSON.parse(text);
                                     this._emit('event', parsed);
                                 }
@@ -61,16 +68,12 @@ export const Connection = class Connection {
                             this._setState('disconnected');
                             this._scheduleReconnect();
                         });
-
-                        this._ws.connect('error', () => {
-                            // closed signal follows
-                        });
                     } catch (e) {
                         log(`[vox2ai] connection failed: ${e}`);
                         this._setState('disconnected');
                         this._scheduleReconnect();
                     }
-                }
+                },
             );
         } catch (e) {
             log(`[vox2ai] connection error: ${e}`);
@@ -86,16 +89,10 @@ export const Connection = class Connection {
             this._reconnectTimer = null;
         }
         if (this._ws) {
-            try {
-                this._ws.close(Soup.WebsocketCloseCode.NORMAL, '');
-            } catch (e) {
-                // ignore
-            }
+            try { this._ws.close(1000, ''); } catch (e) {}
             this._ws = null;
         }
-        if (this._session) {
-            this._session = null;
-        }
+        this._session = null;
         this._setState('disconnected');
     }
 
@@ -103,8 +100,7 @@ export const Connection = class Connection {
         if (!this._ws)
             return false;
         try {
-            const json = JSON.stringify(data);
-            this._ws.send_text(json);
+            this._ws.send_text(JSON.stringify(data));
             return true;
         } catch (e) {
             log(`[vox2ai] send error: ${e}`);
@@ -113,7 +109,7 @@ export const Connection = class Connection {
     }
 
     _scheduleReconnect() {
-        if (this._disposed || this._reconnectAttempts >= this._maxAttempts)
+        if (this._disposed || this._reconnectAttempts >= 10)
             return;
 
         this._reconnectAttempts++;
@@ -123,9 +119,7 @@ export const Connection = class Connection {
         );
 
         this._reconnectTimer = GLib.timeout_add(
-            GLib.PRIORITY_DEFAULT,
-            delay,
-            () => {
+            GLib.PRIORITY_DEFAULT, delay, () => {
                 this._reconnectTimer = null;
                 this.connect();
                 return GLib.SOURCE_REMOVE;
@@ -134,8 +128,7 @@ export const Connection = class Connection {
     }
 
     _setState(s) {
-        if (this._state === s)
-            return;
+        if (this._state === s) return;
         this._state = s;
         this._emit('state', s);
     }
