@@ -56,11 +56,15 @@ export const Connection = class Connection {
                                         text = new TextDecoder().decode(data);
                                     else
                                         text = String(data);
-                                    const parsed = JSON.parse(text);
-                                    this._emit('event', parsed);
+                                    // Only parse actual JSON messages
+                                    text = text.trim();
+                                    if (text.startsWith('{') || text.startsWith('[')) {
+                                        const parsed = JSON.parse(text);
+                                        this._emit('event', parsed);
+                                    }
                                 }
                             } catch (e) {
-                                log(`[vox2ai] bad message: ${e}`);
+                                // Silent for non-JSON data (HTTP headers, etc.)
                             }
                         });
 

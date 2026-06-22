@@ -1,7 +1,9 @@
 // vox2ai extension controller — orchestrates state, connection, and UI
 
+import GLib from 'gi://GLib';
 import {State, StateMachine} from './state.js';
 import {Connection} from './connection.js';
+import {BackendService} from './backendService.js';
 
 export const Controller = class Controller {
     constructor(settings) {
@@ -38,6 +40,10 @@ export const Controller = class Controller {
             fn();
     }
 
+    startBackend() {
+        this.ensureBackendRunning();
+    }
+
     connect() {
         const host = this._settings.get_string('backend-host') || '127.0.0.1';
         const port = this._settings.get_int('backend-port') || 8765;
@@ -63,18 +69,69 @@ export const Controller = class Controller {
         this._notify();
     }
 
-    reconnect() {
+    async reconnect() {
         this.disconnect();
+        await BackendService.restart();
+        this._stateMachine.setState(State.BACKEND_STARTING);
+        this._notify();
         this.connect();
+    }
+
+    async ensureBackendRunning() {
+        if (this._connection && this._connection.state === 'connected')
+            return true;
+
+        this._stateMachine.setState(State.BACKEND_STARTING);
+        this._notify();
+
+        // Start the systemd service
+        const result = await BackendService.start();
+        if (!result.ok) {
+            const detail = result.stderr || result.stdout || 'systemctl returned non-zero';
+            this._errorMessage = `Failed to start backend: ${detail}`;
+            this._stateMachine.setState(State.ERROR);
+            this._notify();
+            return false;
+        }
+
+        // Poll for connection up to timeout
+        const timeoutMs = 10000;
+        const pollInterval = 400;
+        const deadline = GLib.get_monotonic_time() + timeoutMs * 1000;
+
+        this.connect(); // starts non-blocking connection attempt
+
+        while (GLib.get_monotonic_time() < deadline) {
+            if (this._connection && this._connection.state === 'connected') {
+                this._stateMachine.setState(State.IDLE);
+                this._notify();
+                return true;
+            }
+            await new Promise(r => GLib.timeout_add(GLib.PRIORITY_DEFAULT, pollInterval, () => { r(); return GLib.SOURCE_REMOVE; }));
+        }
+
+        this._errorMessage = 'Backend service started but connection timed out.';
+        this._stateMachine.setState(State.ERROR);
+        this._notify();
+        return false;
     }
 
     startRecording() {
         this._pendingRecordOnReady = false;
         if (this._connection && this._connection.state === 'connected') {
             this._connection.send({type: 'start_recording'});
+            this._stateMachine.setState(State.LISTENING);
+            this._notify();
         } else {
             this._pendingRecordOnReady = true;
-            this.connect();
+            this.ensureBackendRunning().then((ok) => {
+                if (ok && this._pendingRecordOnReady) {
+                    this._pendingRecordOnReady = false;
+                    this._connection?.send({type: 'start_recording'});
+                    this._stateMachine.setState(State.LISTENING);
+                    this._notify();
+                }
+            });
         }
     }
 

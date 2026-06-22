@@ -92,15 +92,11 @@ export default class Vox2aiExtension extends Extension {
         const schemaId = 'org.gnome.shell.extensions.vox2ai';
         const keyName = 'vox2ai-activate';
 
-        // Verify the key exists in the schema
+        // Verify the key exists by trying to access it
         try {
-            const key = this._settings.get_key(keyName);
-            if (!key) {
-                log(`[vox2ai] schema key '${keyName}' not found`);
-                return;
-            }
+            const val = this._settings.get_strv(keyName);
         } catch (e) {
-            log(`[vox2ai] schema key '${keyName}': ${e}`);
+            log(`[vox2ai] schema key '${keyName}' not found: ${e}`);
             return;
         }
 
@@ -131,13 +127,19 @@ export default class Vox2aiExtension extends Extension {
     }
 
     _toggleWidget() {
-        // No popover widget in MVP — just activate behavior
-        this._activate();
+        if (!this._controller)
+            return;
+        if (this._indicator)
+            this._indicator.menu.open();
     }
 
     _activate() {
         if (!this._controller)
             return;
+
+        // Open the panel menu to show state
+        if (this._indicator)
+            this._indicator.menu.open();
 
         const behavior = this._settings.get_string('shortcut-behavior') || 'show-and-record';
 
