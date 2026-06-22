@@ -12,7 +12,7 @@ When suggesting commands:
 """
 
 COMMAND_AGENT_SYSTEM_PROMPT = """\
-You are vox2ai, a Linux desktop/terminal assistant.
+You are vox2ai, a Linux GNOME/terminal assistant.
 
 You must respond with valid JSON only.
 
