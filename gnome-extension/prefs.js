@@ -189,10 +189,10 @@ function createAboutGroup(settings) {
     const versionRow = createRow('vox2ai extension', 'Version 1');
     group.add(versionRow);
 
-    const shellRow = createRow('GNOME Shell', '');
+    const shellRow = createRow('GNOME Shell', 'GNOME');
     try {
-        const pkg = (await import('gi://Meta')).get_package_name?.();
-        shellRow.set_subtitle(pkg || 'GNOME');
+        const Meta = imports.gi.Meta;
+        shellRow.set_subtitle(Meta.get_package_name?.() || 'GNOME');
     } catch {
         shellRow.set_subtitle('GNOME');
     }

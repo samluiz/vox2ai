@@ -3,30 +3,41 @@
   <schema id="org.gnome.shell.extensions.vox2ai"
           path="/org/gnome/shell/extensions/vox2ai/">
 
-    <!-- Activation -->
-    <key name="activation-shortcut" type="as">
+    <!-- Global shortcut keybinding -->
+    <key name="vox2ai-activate" type="as">
       <default><![CDATA[["<Control>space"]]]></default>
-      <summary>Global activation shortcut</summary>
-      <description>Keyboard shortcut to open the assistant and start recording.</description>
+      <summary>Activate vox2ai</summary>
+      <description>Global shortcut to activate the assistant.</description>
     </key>
+
+    <!-- Activation -->
     <key name="shortcut-behavior" type="s">
       <default>"show-and-record"</default>
       <summary>Shortcut behavior</summary>
       <description>What happens when the global shortcut is pressed.</description>
     </key>
+    <key name="show-panel-indicator" type="b">
+      <default>true</default>
+      <summary>Show panel indicator</summary>
+    </key>
+    <key name="auto-start-backend" type="b">
+      <default>true</default>
+      <summary>Auto-start backend service</summary>
+    </key>
+    <key name="compact-density" type="b">
+      <default>true</default>
+      <summary>Compact UI density</summary>
+    </key>
 
     <!-- Provider -->
     <key name="provider-id" type="s">
       <default>"openai"</default>
-      <summary>Provider ID</summary>
     </key>
     <key name="base-url" type="s">
       <default>"https://api.openai.com/v1"</default>
-      <summary>LLM API base URL</summary>
     </key>
     <key name="model" type="s">
       <default>"gpt-4.1-mini"</default>
-      <summary>LLM model name</summary>
     </key>
 
     <!-- Backend -->
@@ -36,20 +47,6 @@
     <key name="backend-port" type="i">
       <default>8765</default>
       <range min="1024" max="65535"/>
-    </key>
-    <key name="auto-start-backend" type="b">
-      <default>true</default>
-      <summary>Auto-start backend service</summary>
-    </key>
-
-    <!-- UI -->
-    <key name="show-panel-indicator" type="b">
-      <default>true</default>
-      <summary>Show panel indicator</summary>
-    </key>
-    <key name="compact-density" type="b">
-      <default>true</default>
-      <summary>Compact UI density</summary>
     </key>
 
   </schema>

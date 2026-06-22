@@ -2,164 +2,156 @@
 
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
+import GObject from 'gi://GObject';
+import Meta from 'gi://Meta';
+import Shell from 'gi://Shell';
+import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
-import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
-import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 import {Controller} from './lib/controller.js';
 import {PanelIndicator} from './lib/ui/panelIndicator.js';
-import {AssistantWidget} from './lib/ui/assistantWidget.js';
 
-const SchemaId = 'org.gnome.shell.extensions.vox2ai';
-
-let _indicator = null;
-let _controller = null;
-let _settings = null;
-let _shortcutHandler = null;
-
-export default class Vox2aiExtension {
-    constructor(metadata) {
-        this._metadata = metadata;
+export default class Vox2aiExtension extends Extension {
+    constructor(...args) {
+        super(...args);
+        this._settings = null;
+        this._controller = null;
+        this._indicator = null;
+        this._keybindingId = null;
+        this._keybindingName = null;
     }
 
     enable() {
-        _settings = new Gio.Settings({schema_id: SchemaId});
+        try {
+            this._enableSafe();
+        } catch (e) {
+            log(`[vox2ai] enable error: ${e}`);
+        }
+    }
 
-        _controller = new Controller(_settings);
-
-        // Panel indicator
-        if (_settings.get_boolean('show-panel-indicator')) {
-            _indicator = new PanelIndicator(
-                _controller,
-                () => this._toggleWidget(),
-                () => this._openPreferences(),
-                () => this._openDiagnostics(),
-            );
-            Main.panel.addToStatusArea('vox2ai', _indicator, 1, 'right');
+    _enableSafe() {
+        // 1. Settings
+        this._settings = this.getSettings();
+        if (!this._settings) {
+            log('[vox2ai] no settings available');
+            return;
         }
 
-        // Connect to backend
-        if (_settings.get_boolean('auto-start-backend'))
-            _controller.connect();
+        // 2. Controller
+        this._controller = new Controller(this._settings);
 
-        // Register global shortcut
-        this._registerShortcut();
+        // 3. Panel indicator (best-effort)
+        try {
+            if (this._settings.get_boolean('show-panel-indicator')) {
+                this._indicator = new PanelIndicator(
+                    this._controller,
+                    () => this._toggleWidget(),
+                );
+                Main.panel.addToStatusArea('vox2ai', this._indicator, 1, 'right');
+            }
+        } catch (e) {
+            log(`[vox2ai] indicator error: ${e}`);
+        }
+
+        // 4. Backend connection (best-effort)
+        try {
+            if (this._settings.get_boolean('auto-start-backend'))
+                this._controller.connect();
+        } catch (e) {
+            log(`[vox2ai] backend connect error: ${e}`);
+        }
+
+        // 5. Keybinding
+        try {
+            this._registerKeybinding();
+        } catch (e) {
+            log(`[vox2ai] keybinding error: ${e}`);
+        }
     }
 
     disable() {
-        this._unregisterShortcut();
+        this._unregisterKeybinding();
 
-        if (_indicator) {
-            _indicator.destroy();
-            _indicator = null;
+        if (this._indicator) {
+            try { this._indicator.destroy(); } catch (e) { log(`[vox2ai] destroy indicator error: ${e}`); }
+            this._indicator = null;
         }
-        if (_controller) {
-            _controller.disconnect();
-            _controller = null;
+
+        if (this._controller) {
+            try { this._controller.disconnect(); } catch (e) { log(`[vox2ai] controller disconnect error: ${e}`); }
+            this._controller = null;
         }
-        _settings = null;
+
+        this._settings = null;
+    }
+
+    _registerKeybinding() {
+        if (this._keybindingId)
+            return;
+
+        const schemaId = 'org.gnome.shell.extensions.vox2ai';
+        const keyName = 'vox2ai-activate';
+
+        // Verify the key exists in the schema
+        try {
+            const key = this._settings.get_key(keyName);
+            if (!key) {
+                log(`[vox2ai] schema key '${keyName}' not found`);
+                return;
+            }
+        } catch (e) {
+            log(`[vox2ai] schema key '${keyName}': ${e}`);
+            return;
+        }
+
+        this._keybindingName = keyName;
+        this._keybindingId = Main.wm.addKeybinding(
+            keyName,
+            this._settings,
+            Meta.KeyBindingFlags.IGNORE_AUTOREPEAT,
+            Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW,
+            () => this._activate(),
+        );
+
+        if (!this._keybindingId) {
+            log('[vox2ai] keybinding registration returned no id');
+        }
+    }
+
+    _unregisterKeybinding() {
+        if (this._keybindingId) {
+            try {
+                Main.wm.removeKeybinding(this._keybindingName);
+            } catch (e) {
+                log(`[vox2ai] remove keybinding error: ${e}`);
+            }
+            this._keybindingId = null;
+            this._keybindingName = null;
+        }
     }
 
     _toggleWidget() {
-        if (!_controller)
-            return;
-
-        // Close existing widget if open
-        const existing = global.ui?.panelManager?.getMenu?.();
-        if (existing) {
-            existing.close();
-            return;
-        }
-
-        // Open assistant popup from indicator
-        if (_indicator) {
-            _indicator.menu.close(); // close secondary menu
-        }
-
-        // Show a simple notification-based UI for now
-        // (GNOME Shell popover menus from panel buttons require more complex integration)
-        const s = _controller.state;
-        if (s === 'disconnected' || s === 'backend-starting') {
-            if (_settings.get_boolean('auto-start-backend'))
-                _controller.connect();
-            else
-                _controller.connect();
-        }
-    }
-
-    _registerShortcut() {
-        if (_shortcutHandler)
-            return;
-
-        const shortcuts = _settings.get_strv('activation-shortcut');
-        if (!shortcuts || shortcuts.length === 0)
-            return;
-
-        // Use GNOME Shell's built-in keybinding handler
-        try {
-            _shortcutHandler = global.display?.accelerator_activate?.();
-
-            // Alternative: use grab accelerator approach
-            this._actionName = 'vox2ai-activate';
-            this._action = global.display?.add_keybinding?.(
-                this._actionName,
-                _settings,
-                Gio.SettingsBindFlags.DEFAULT,
-                () => this._activate(),
-            );
-        } catch (e) {
-            log(`[vox2ai] shortcut registration failed: ${e}`);
-        }
-    }
-
-    _unregisterShortcut() {
-        if (this._action) {
-            this._action.destroy();
-            this._action = null;
-        }
-        _shortcutHandler = null;
+        // No popover widget in MVP — just activate behavior
+        this._activate();
     }
 
     _activate() {
-        if (!_controller)
+        if (!this._controller)
             return;
 
-        const behavior = _settings.get_string('shortcut-behavior') || 'show-and-record';
+        const behavior = this._settings.get_string('shortcut-behavior') || 'show-and-record';
 
         if (behavior === 'toggle-widget') {
             this._toggleWidget();
             return;
         }
 
-        if (behavior === 'show-widget') {
-            this._toggleWidget();
-            return;
-        }
-
-        if (behavior === 'show-and-focus-input') {
+        if (behavior === 'show-widget' || behavior === 'show-and-focus-input') {
             this._toggleWidget();
             return;
         }
 
         // show-and-record (default)
-        _controller.startRecording();
-        // Show the widget state through the indicator
-    }
-
-    _openPreferences() {
-        try {
-            const AppSystem = (await import('resource:///org/gnome/shell/extensions/extension.js')).default;
-            const ext = AppSystem.lookup('vox2ai@samluiz.com');
-            if (ext)
-                ext.openPreferences();
-        } catch (e) {
-            GLib.spawn_command_line_async(
-                'gnome-extensions prefs vox2ai@samluiz.com'
-            );
-        }
-    }
-
-    _openDiagnostics() {
-        // Show diagnostics in the widget or open prefs to diagnostics section
+        this._controller.startRecording();
     }
 }

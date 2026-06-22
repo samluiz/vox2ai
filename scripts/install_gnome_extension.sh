@@ -10,17 +10,28 @@ echo "[vox2ai] Installing GNOME Shell extension..."
 
 mkdir -p "${EXT_DIR}"
 
-cp -r "${REPO_DIR}/gnome-extension/extension.js"   "${EXT_DIR}/"
-cp -r "${REPO_DIR}/gnome-extension/prefs.js"       "${EXT_DIR}/"
-cp -r "${REPO_DIR}/gnome-extension/metadata.json"  "${EXT_DIR}/"
-cp -r "${REPO_DIR}/gnome-extension/stylesheet.css" "${EXT_DIR}/"
-cp -r "${REPO_DIR}/gnome-extension/lib"            "${EXT_DIR}/lib"
+# Copy extension files (force overwrite)
+cp -rf "${REPO_DIR}/gnome-extension/extension.js"   "${EXT_DIR}/"
+cp -rf "${REPO_DIR}/gnome-extension/prefs.js"       "${EXT_DIR}/"
+cp -rf "${REPO_DIR}/gnome-extension/metadata.json"  "${EXT_DIR}/"
+cp -rf "${REPO_DIR}/gnome-extension/stylesheet.css" "${EXT_DIR}/"
 
+# Copy lib directory
+rm -rf "${EXT_DIR}/lib"
+cp -rf "${REPO_DIR}/gnome-extension/lib" "${EXT_DIR}/lib"
+
+# Copy and compile schemas
 if [ -d "${REPO_DIR}/gnome-extension/schemas" ]; then
   mkdir -p "${EXT_DIR}/schemas"
-  cp -r "${REPO_DIR}/gnome-extension/schemas/"* "${EXT_DIR}/schemas/"
+  cp -rf "${REPO_DIR}/gnome-extension/schemas/"* "${EXT_DIR}/schemas/"
   glib-compile-schemas "${EXT_DIR}/schemas/"
 fi
+
+# Also install schema globally for gsettings CLI
+mkdir -p "${HOME}/.local/share/glib-2.0/schemas"
+cp -f "${EXT_DIR}/schemas/org.gnome.shell.extensions.vox2ai.gschema.xml" \
+      "${HOME}/.local/share/glib-2.0/schemas/"
+glib-compile-schemas "${HOME}/.local/share/glib-2.0/schemas/" 2>/dev/null || true
 
 if [ -f "${EXT_DIR}/metadata.json" ]; then
   echo "[vox2ai] Extension installed to ${EXT_DIR}"

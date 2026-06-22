@@ -1,17 +1,22 @@
 // Panel indicator for vox2ai
 
+import GLib from 'gi://GLib';
 import St from 'gi://St';
+import GObject from 'gi://GObject';
 import Clutter from 'gi://Clutter';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 
 export const PanelIndicator = class PanelIndicator extends PanelMenu.Button {
-    constructor(controller, onToggle, onOpenSettings, onOpenDiagnostics) {
-        super(0.0, 'vox2ai', false);
+    static {
+        GObject.registerClass(this);
+    }
+
+    _init(controller, onToggle) {
+        super._init(0.0, 'vox2ai', false);
 
         this._controller = controller;
         this._onToggle = onToggle;
-        this._onOpenSettings = onOpenSettings;
 
         this._dot = new St.Widget({
             style_class: 'vox2ai-status-dot vox2ai-status-dot-off',
@@ -36,16 +41,13 @@ export const PanelIndicator = class PanelIndicator extends PanelMenu.Button {
             return Clutter.EVENT_STOP;
         });
 
-        // Secondary menu
         const menu = this.menu;
         menu.addAction('Open Assistant', () => this._onToggle());
         menu.addAction('Start Recording', () => controller.startRecording());
         menu.addAction('Cancel', () => controller.cancel());
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
-        menu.addAction('Open Preferences', () => this._onOpenSettings());
-        menu.addAction('Restart Backend', () => {
-            controller.reconnect();
-        });
+        menu.addAction('Open Preferences', () => this._openPrefs());
+        menu.addAction('Restart Backend', () => controller.reconnect());
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         menu.addAction('Stop Backend', () => controller.disconnect());
 
@@ -55,22 +57,20 @@ export const PanelIndicator = class PanelIndicator extends PanelMenu.Button {
 
     _sync() {
         const s = this._controller.state;
-        switch (s) {
-            case 'listening':
-                this._dot.style_class = 'vox2ai-status-dot vox2ai-status-dot-recording';
-                this._label.text = 'vox2ai';
-                break;
-            case 'disconnected':
-                this._dot.style_class = 'vox2ai-status-dot vox2ai-status-dot-off';
-                this._label.text = 'vox2ai';
-                break;
-            case 'error':
-                this._dot.style_class = 'vox2ai-status-dot vox2ai-status-dot-warn';
-                this._label.text = 'vox2ai';
-                break;
-            default:
-                this._dot.style_class = 'vox2ai-status-dot vox2ai-status-dot-ok';
-                this._label.text = 'vox2ai';
+        this._dot.style_class = 'vox2ai-status-dot vox2ai-status-dot-off';
+        if (s === 'listening')
+            this._dot.style_class = 'vox2ai-status-dot vox2ai-status-dot-recording';
+        else if (s === 'error')
+            this._dot.style_class = 'vox2ai-status-dot vox2ai-status-dot-warn';
+        else if (s !== 'disconnected' && s !== 'backend-starting')
+            this._dot.style_class = 'vox2ai-status-dot vox2ai-status-dot-ok';
+    }
+
+    _openPrefs() {
+        try {
+            GLib.spawn_command_line_async('gnome-extensions prefs vox2ai@samluiz.com');
+        } catch (e) {
+            log(`[vox2ai] prefs error: ${e}`);
         }
     }
 };
