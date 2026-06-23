@@ -10,6 +10,11 @@ export const State = Object.freeze({
     ANSWERING: 'answering',
     COMMAND_APPROVAL: 'command-approval',
     COMMAND_RUNNING: 'command-running',
+    RESULT: 'result',
+    RECENT: 'recent',
+    SCREEN_CAPTURING: 'screen-capturing',
+    SCREEN_READY: 'screen-ready',
+    SCREEN_ANSWERING: 'screen-answering',
     ERROR: 'error',
 });
 

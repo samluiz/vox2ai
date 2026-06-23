@@ -3,6 +3,16 @@
 import Soup from 'gi://Soup';
 import GLib from 'gi://GLib';
 
+function decodeWebSocketText(data) {
+    if (typeof data === 'string')
+        return data;
+    if (data instanceof Uint8Array)
+        return new TextDecoder().decode(data);
+    if (data && typeof data.get_data === 'function')
+        return new TextDecoder().decode(data.get_data());
+    return String(data ?? '');
+}
+
 export const Connection = class Connection {
     constructor(host, port) {
         this._host = host || '127.0.0.1';
@@ -30,7 +40,7 @@ export const Connection = class Connection {
 
         try {
             this._session = new Soup.Session();
-            const uri = GLib.Uri.parse(
+            const uri = GLib.uri_parse(
                 `ws://${this._host}:${this._port}`,
                 GLib.UriFlags.NONE
             );
@@ -50,21 +60,16 @@ export const Connection = class Connection {
 
                         this._ws.connect('message', (ws, type, data) => {
                             try {
-                                let text = '';
-                                if (type === Soup.WebsocketDataType.TEXT) {
-                                    if (data instanceof Uint8Array)
-                                        text = new TextDecoder().decode(data);
-                                    else
-                                        text = String(data);
-                                    // Only parse actual JSON messages
-                                    text = text.trim();
-                                    if (text.startsWith('{') || text.startsWith('[')) {
-                                        const parsed = JSON.parse(text);
-                                        this._emit('event', parsed);
-                                    }
-                                }
+                                if (type !== Soup.WebsocketDataType.TEXT)
+                                    return;
+
+                                const text = decodeWebSocketText(data).trim();
+                                if (!text.startsWith('{') && !text.startsWith('['))
+                                    return;
+
+                                this._emit('event', JSON.parse(text));
                             } catch (e) {
-                                // Silent for non-JSON data (HTTP headers, etc.)
+                                log(`[vox2ai] websocket message parse error: ${e}`);
                             }
                         });
 

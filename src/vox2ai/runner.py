@@ -21,6 +21,7 @@ def run_one_shot_assistant() -> None:
             config.voice.sample_rate,
             min_duration_seconds=config.voice.min_duration_seconds,
             min_rms=config.voice.min_rms,
+            input_device=config.voice.input_device,
         )
 
         _console().print("\n[bold]You said:[/bold]")
@@ -56,6 +57,7 @@ def run_one_shot_dictation() -> None:
             config.voice.sample_rate,
             min_duration_seconds=config.voice.min_duration_seconds,
             min_rms=config.voice.min_rms,
+            input_device=config.voice.input_device,
         )
 
         _console().print("\n[bold]You said:[/bold]")

@@ -1,311 +1,852 @@
-// vox2ai extension controller — orchestrates state, connection, and UI
-
 import GLib from 'gi://GLib';
-import {State, StateMachine} from './state.js';
+import St from 'gi://St';
+import {State} from './state.js';
 import {Connection} from './connection.js';
 import {BackendService} from './backendService.js';
 
-export const Controller = class Controller {
-    constructor(settings) {
-        this._settings = settings;
-        this._stateMachine = new StateMachine();
-        this._connection = null;
-        this._transcript = '';
-        this._partialTranscript = '';
-        this._answerText = '';
-        this._answerCursor = false;
-        this._commandApproval = null;
-        this._commandResult = null;
-        this._errorMessage = null;
-        this._levels = [];
+function safeGet(settings, method, key, fallback) {
+    try {
+        if (!settings) return fallback;
+        if (!settings.settings_schema) return fallback;
+        if (!settings.settings_schema.has_key(key)) return fallback;
+        return settings[method](key);
+    } catch (e) {
+        return fallback;
+    }
+}
 
-        this._pendingRecordOnReady = false;
+export const Controller = class Controller {
+    constructor(settings, soundFeedback = null, notifications = null) {
+        this._settings = settings;
+        this._soundFeedback = soundFeedback;
+        this._notifications = notifications;
+        this._connection = null;
         this._listeners = new Set();
+        this._pendingRecordOnReady = false;
+        this._cancelSafetyTimer = null;
+        this._copyFeedbackTimer = null;
+        this._lastAnswerNotified = '';
+        this._lastCommandNotified = '';
+
+        this._state = {
+            status: State.DISCONNECTED,
+            backendConnected: false,
+            backendStarting: false,
+            inputText: '',
+            userText: '',
+            transcript: '',
+            partialTranscript: '',
+            answer: '',
+            answerStreaming: false,
+            audioLevel: 0,
+            audioPeak: 0,
+            lastAudioLevelAt: 0,
+            audioEventsReceived: false,
+            voiceActive: false,
+            speechStarted: false,
+            silenceMs: 0,
+            lastVoiceActivity: 'unknown',
+            autoFinishEnabled: safeGet(settings, 'get_boolean', 'auto-finish-recording', true),
+            silenceTimeoutMs: safeGet(settings, 'get_int', 'silence-timeout-ms', 2000),
+            processingMessage: '',
+            recordingStopReason: '',
+            commandApproval: null,
+            commandResult: null,
+            error: null,
+            lastBackendError: null,
+            settings: null,
+            diagnostics: null,
+            copyFeedback: '',
+            conversationMode: safeGet(settings, 'get_boolean', 'conversation-mode', false),
+            modelProfiles: [],
+            activeModelProfile: 'fast',
+            history: [],
+            screenContext: {
+                id: null,
+                mode: null,
+                status: 'idle',
+                error: null,
+            },
+            safeMode: safeGet(settings, 'get_boolean', 'safe-mode', false),
+        };
     }
 
-    get state() { return this._stateMachine.state; }
-    get transcript() { return this._transcript; }
-    get partialTranscript() { return this._partialTranscript; }
-    get answerText() { return this._answerText; }
-    get answerCursor() { return this._answerCursor; }
-    get commandApproval() { return this._commandApproval; }
-    get commandResult() { return this._commandResult; }
-    get errorMessage() { return this._errorMessage; }
-    get levels() { return this._levels; }
+    get state() {
+        return this._state;
+    }
 
-    onUpdate(fn) { this._listeners.add(fn); }
+    onUpdate(fn) {
+        this._listeners.add(fn);
+    }
+
+    offUpdate(fn) {
+        this._listeners.delete(fn);
+    }
 
     _notify() {
-        for (const fn of this._listeners)
-            fn();
+        for (const fn of this._listeners) {
+            try {
+                fn(this._state);
+            } catch (e) {
+                log(`[vox2ai] listener error: ${e}`);
+            }
+        }
     }
 
-    startBackend() {
-        this.ensureBackendRunning();
+    _setState(patch = {}) {
+        const oldStatus = this._state.status;
+        const next = {...patch};
+        if (Object.prototype.hasOwnProperty.call(next, 'status')) {
+            next.backendStarting = next.status === State.BACKEND_STARTING;
+            if (next.status === State.DISCONNECTED)
+                next.backendConnected = false;
+        }
+        Object.assign(this._state, next);
+        this._notify();
+        if (this._state.status !== oldStatus)
+            this._onStatusChanged(oldStatus, this._state.status);
+    }
+
+    _setStatus(status) {
+        if (this._state.status === status) {
+            this._setState({backendStarting: status === State.BACKEND_STARTING});
+            return;
+        }
+        this._setState({status});
     }
 
     connect() {
-        const host = this._settings.get_string('backend-host') || '127.0.0.1';
-        const port = this._settings.get_int('backend-port') || 8765;
+        if (this._connection) {
+            this._connection.connect();
+            this._setState({status: State.BACKEND_STARTING, backendConnected: false});
+            return;
+        }
+
+        const host = safeGet(this._settings, 'get_string', 'backend-host', '127.0.0.1');
+        const port = safeGet(this._settings, 'get_int', 'backend-port', 8765);
 
         this._connection = new Connection(host, port);
         this._connection.onEvent((type, data) => {
-            if (type === 'state')
-                this._onConnectionState(data);
-            else if (type === 'event')
-                this._onBackendEvent(data);
+            try {
+                if (type === 'state')
+                    this._onConnectionState(data);
+                else if (type === 'event')
+                    this.handleBackendEvent(data);
+            } catch (e) {
+                log(`[vox2ai] controller event error: ${e}`);
+            }
         });
         this._connection.connect();
-        this._stateMachine.setState(State.BACKEND_STARTING);
-        this._notify();
+        this._setState({status: State.BACKEND_STARTING, backendConnected: false});
+    }
+
+    syncRuntimeSettings() {
+        const runtime = this._readRuntimeSettings();
+        this._setState(runtime);
+        if (!this._state.backendConnected)
+            return;
+
+        this._send({
+            type: 'update_settings',
+            settings: {
+                voice: {
+                    auto_finish_enabled: runtime.autoFinishEnabled,
+                    silence_timeout_ms: runtime.silenceTimeoutMs,
+                    min_recording_ms: runtime.minRecordingMs,
+                    max_recording_ms: runtime.maxRecordingMs,
+                    voice_activity_threshold: runtime.voiceActivityThreshold,
+                },
+                conversation: {
+                    enabled: safeGet(this._settings, 'get_boolean', 'conversation-mode', false),
+                    max_turns: safeGet(this._settings, 'get_int', 'conversation-max-turns', 8),
+                    max_messages: safeGet(this._settings, 'get_int', 'conversation-max-turns', 8) * 2,
+                },
+                context: {
+                    screen_context_enabled: false,
+                    screen_capture_method: 'disabled',
+                    screen_capture_save_debug: false,
+                },
+            },
+        });
     }
 
     disconnect() {
+        this._clearCancelTimer();
         if (this._connection) {
             this._connection.disconnect();
             this._connection = null;
         }
-        this._stateMachine.setState(State.DISCONNECTED);
-        this._notify();
+        this._resetState();
+        this._setStatus(State.DISCONNECTED);
     }
 
-    async reconnect() {
-        this.disconnect();
-        await BackendService.restart();
-        this._stateMachine.setState(State.BACKEND_STARTING);
-        this._notify();
-        this.connect();
+    async startBackend() {
+        return this.ensureBackendRunning();
     }
 
     async ensureBackendRunning() {
-        if (this._connection && this._connection.state === 'connected')
+        if (this._connection && this._state.backendConnected)
             return true;
 
-        this._stateMachine.setState(State.BACKEND_STARTING);
-        this._notify();
-
-        // Start the systemd service
-        const result = await BackendService.start();
-        if (!result.ok) {
-            const detail = result.stderr || result.stdout || 'systemctl returned non-zero';
-            this._errorMessage = `Failed to start backend: ${detail}`;
-            this._stateMachine.setState(State.ERROR);
-            this._notify();
+        const installed = await BackendService.isInstalled();
+        if (!installed) {
+            this._setState({
+                status: State.ERROR,
+                error: 'Backend service is not installed. Run scripts/install_backend_service.sh',
+                lastBackendError: 'Backend service is not installed',
+            });
             return false;
         }
 
-        // Poll for connection up to timeout
+        this._setState({status: State.BACKEND_STARTING, error: null});
+        const result = await BackendService.start();
+        if (!result.ok) {
+            const detail = result.stderr || result.stdout || 'systemctl returned non-zero';
+            this._setState({
+                status: State.ERROR,
+                error: `Failed to start backend: ${detail}`,
+                lastBackendError: detail,
+            });
+            return false;
+        }
+
+        this.connect();
+
         const timeoutMs = 10000;
         const pollInterval = 400;
         const deadline = GLib.get_monotonic_time() + timeoutMs * 1000;
 
-        this.connect(); // starts non-blocking connection attempt
-
         while (GLib.get_monotonic_time() < deadline) {
-            if (this._connection && this._connection.state === 'connected') {
-                this._stateMachine.setState(State.IDLE);
-                this._notify();
+            if (this._state.backendConnected) {
+                this._setStatus(State.IDLE);
                 return true;
             }
-            await new Promise(r => GLib.timeout_add(GLib.PRIORITY_DEFAULT, pollInterval, () => { r(); return GLib.SOURCE_REMOVE; }));
+            await this._sleep(pollInterval);
         }
 
-        this._errorMessage = 'Backend service started but connection timed out.';
-        this._stateMachine.setState(State.ERROR);
-        this._notify();
+        this._setState({
+            status: State.ERROR,
+            error: 'Backend service started but connection timed out.',
+            lastBackendError: 'Connection timed out after service start',
+        });
         return false;
     }
 
-    startRecording() {
-        this._pendingRecordOnReady = false;
-        if (this._connection && this._connection.state === 'connected') {
-            this._connection.send({type: 'start_recording'});
-            this._stateMachine.setState(State.LISTENING);
-            this._notify();
-        } else {
-            this._pendingRecordOnReady = true;
-            this.ensureBackendRunning().then((ok) => {
-                if (ok && this._pendingRecordOnReady) {
-                    this._pendingRecordOnReady = false;
-                    this._connection?.send({type: 'start_recording'});
-                    this._stateMachine.setState(State.LISTENING);
-                    this._notify();
-                }
+    async stopBackend() {
+        this.disconnect();
+        await BackendService.stop();
+    }
+
+    async restartBackend() {
+        this.disconnect();
+        const result = await BackendService.restart();
+        if (!result.ok) {
+            const detail = result.stderr || result.stdout || 'systemctl returned non-zero';
+            this._setState({
+                status: State.ERROR,
+                error: `Failed to restart backend: ${detail}`,
+                lastBackendError: detail,
             });
+            return false;
         }
+        this.connect();
+        return this._waitForConnection(10000);
+    }
+
+    async _waitForConnection(timeoutMs) {
+        const pollInterval = 400;
+        const deadline = GLib.get_monotonic_time() + timeoutMs * 1000;
+        while (GLib.get_monotonic_time() < deadline) {
+            if (this._state.backendConnected) {
+                this._setStatus(State.IDLE);
+                return true;
+            }
+            await this._sleep(pollInterval);
+        }
+        this._setState({
+            status: State.ERROR,
+            error: 'Backend connection timed out.',
+            lastBackendError: 'Connection timed out',
+        });
+        return false;
+    }
+
+    _sleep(ms) {
+        return new Promise(r => GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => {
+            r();
+            return GLib.SOURCE_REMOVE;
+        }));
+    }
+
+    async startRecording() {
+        if (this._state.status === State.BACKEND_STARTING) {
+            this._pendingRecordOnReady = true;
+            return;
+        }
+
+        this._pendingRecordOnReady = false;
+        if (![State.IDLE, State.DISCONNECTED, State.ERROR].includes(this._state.status))
+            return;
+
+        this._clearSession(false);
+        this.syncRuntimeSettings();
+
+        const ok = await this.ensureBackendRunning();
+        if (!ok)
+            return;
+
+        if (this._send({type: 'start_recording'}))
+            this._setStatus(State.LISTENING);
     }
 
     stopRecording() {
-        this._connection?.send({type: 'stop_recording'});
+        if (this._state.status !== State.LISTENING)
+            return;
+        this._send({type: 'stop_recording'});
+        this._setState({
+            status: State.TRANSCRIBING,
+            processingMessage: 'Processing speech...',
+            recordingStopReason: 'manual',
+        });
     }
 
     cancel() {
         this._pendingRecordOnReady = false;
-        this._connection?.send({type: 'cancel_current_operation'});
-        this._clearSession();
+        this._send({type: 'cancel_current_operation'});
+        this._resetToIdle();
+
+        this._clearCancelTimer();
+        this._cancelSafetyTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 800, () => {
+            this._cancelSafetyTimer = null;
+            if (this._state.status !== State.IDLE)
+                this._resetToIdle();
+            return GLib.SOURCE_REMOVE;
+        });
     }
 
     submitText(text) {
-        if (!text || !text.trim())
+        const clean = (text || '').trim();
+        if (!clean)
             return;
-        this._clearSession();
-        this._transcript = text.trim();
-        this._stateMachine.setState(State.THINKING);
-        this._notify();
-        this._connection?.send({type: 'submit_text_prompt', text: this._transcript});
+        this._submitText(clean);
+    }
+
+    async _submitText(clean) {
+        this._clearCancelTimer();
+        const ok = await this.ensureBackendRunning();
+        if (!ok)
+            return;
+
+        this._setState({
+            userText: clean,
+            transcript: clean,
+            partialTranscript: '',
+            answer: '',
+            answerStreaming: false,
+            audioLevel: 0,
+            audioPeak: 0,
+            commandApproval: null,
+            commandResult: null,
+            error: null,
+        });
+
+        if (this._send({type: 'submit_text_prompt', text: clean}))
+            this._setStatus(State.THINKING);
+    }
+
+    requestCommandRun(command) {
+        if (!command)
+            return;
+        this._send({
+            type: 'request_command_approval',
+            command,
+            reason: 'Run command proposed in the answer.',
+        });
+    }
+
+    explainCommand(command) {
+        if (!command)
+            return;
+        this._send({type: 'explain_command', command});
+        this._setStatus(State.THINKING);
     }
 
     approveCommand() {
-        this._connection?.send({type: 'approve_command'});
-        this._stateMachine.setState(State.COMMAND_RUNNING);
-        this._notify();
+        this._send({type: 'approve_command'});
+        this._setStatus(State.COMMAND_RUNNING);
     }
 
     denyCommand() {
-        this._connection?.send({type: 'deny_command'});
-        this._commandApproval = null;
-        this._stateMachine.setState(State.IDLE);
-        this._notify();
+        this._send({type: 'deny_command'});
+        this._resetToIdle();
     }
 
-    // ---- Backend event handlers ----
+    copyAnswer() {
+        const text = this._state.answer;
+        if (text)
+            this._copyText(text, 'Answer copied');
+    }
 
-    _onConnectionState(s) {
-        if (s === 'connected') {
-            this._connection.send({type: 'get_settings'});
-            if (this._pendingRecordOnReady) {
-                this._pendingRecordOnReady = false;
-                this._connection.send({type: 'start_recording'});
-                this._stateMachine.setState(State.LISTENING);
-                this._notify();
-            } else {
-                this._stateMachine.setState(State.IDLE);
-                this._notify();
-            }
-        } else if (s === 'disconnected') {
-            this._stateMachine.setState(State.DISCONNECTED);
-            this._notify();
+    copyCommand() {
+        const cmd = this._state.commandApproval?.command;
+        if (cmd)
+            this._copyText(cmd, 'Command copied');
+    }
+
+    copyError() {
+        const err = this._state.error;
+        if (err)
+            this._copyText(err, 'Error copied');
+    }
+
+    copyOutput() {
+        const result = this._state.commandResult;
+        if (!result)
+            return;
+
+        const text = [
+            `Command: ${result.command || ''}`,
+            `Exit code: ${result.exitCode}`,
+            '',
+            'stdout',
+            result.stdout || '',
+            '',
+            'stderr',
+            result.stderr || '',
+        ].join('\n');
+        this._copyText(text, 'Output copied');
+    }
+
+    copyText(text, feedback = 'Copied', showFeedback = true) {
+        if (text)
+            this._copyText(text, feedback, showFeedback);
+    }
+
+    showToast(message) {
+        if (message)
+            this._setCopyFeedback(message);
+    }
+
+    doneResult() {
+        this._resetToIdle();
+    }
+
+    _copyText(text, feedback = 'Copied', showFeedback = true) {
+        try {
+            const clipboard = St.Clipboard.get_default();
+            clipboard.set_text(St.ClipboardType.CLIPBOARD, text);
+            if (showFeedback)
+                this._setCopyFeedback(feedback);
+            else
+                this._playSound('copy');
+            if (this._notifications)
+                this._notifications.notifyInfo('Copied', '', null);
+        } catch (e) {
+            log(`[vox2ai] copy error: ${e}`);
         }
     }
 
-    _onBackendEvent(event) {
+    _setCopyFeedback(message) {
+        this._playSound('copy');
+        this._setState({copyFeedback: message});
+        if (this._copyFeedbackTimer)
+            GLib.source_remove(this._copyFeedbackTimer);
+        this._copyFeedbackTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1500, () => {
+            this._copyFeedbackTimer = null;
+            if (this._state.copyFeedback === message)
+                this._setState({copyFeedback: ''});
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _send(data) {
+        if (!this._connection)
+            return false;
+        return this._connection.send(data);
+    }
+
+    _onConnectionState(s) {
+        if (s === 'connected') {
+            this._setState({backendConnected: true, backendStarting: false});
+            this._send({type: 'get_settings'});
+            this.syncRuntimeSettings();
+            if (this._pendingRecordOnReady) {
+                this._pendingRecordOnReady = false;
+                this._send({type: 'start_recording'});
+                this._setStatus(State.LISTENING);
+            } else {
+                this._setStatus(State.IDLE);
+            }
+        } else if (s === 'disconnected') {
+            if (this._state.status === State.BACKEND_STARTING)
+                this._setState({backendConnected: false});
+            else
+                this._setState({status: State.DISCONNECTED, backendConnected: false});
+        }
+    }
+
+    handleBackendEvent(event) {
+        if (!event || typeof event !== 'object') {
+            log('[vox2ai] ignoring malformed backend event');
+            return;
+        }
+
         switch (event.type) {
             case 'state':
-                this._handleState(event);
+                this._handleStateEvent(event);
                 break;
             case 'audio_level':
                 this._handleAudioLevel(event);
                 break;
+            case 'voice_activity':
+                this._handleVoiceActivity(event);
+                break;
+            case 'recording_auto_stopping':
+                this._setState({
+                    status: State.TRANSCRIBING,
+                    processingMessage: event.reason === 'silence'
+                        ? 'Stopped after silence. Transcribing...'
+                        : 'Recording limit reached. Transcribing...',
+                    recordingStopReason: event.reason || 'auto',
+                });
+                this._playSound('auto-stop');
+                break;
+            case 'recording_stopped':
+                this._setState({
+                    processingMessage: event.reason === 'auto_silence'
+                        ? 'Stopped after silence. Transcribing...'
+                        : 'Processing speech...',
+                    recordingStopReason: event.reason || 'manual',
+                });
+                if (event.reason !== 'auto_silence')
+                    this._playSound('stop');
+                break;
             case 'partial_transcript':
-                this._partialTranscript = event.text || '';
-                this._notify();
+                this._setState({partialTranscript: event.text || ''});
                 break;
             case 'transcript':
-                this._transcript = event.text || '';
-                this._partialTranscript = '';
-                this._notify();
+                this._setState({
+                    transcript: event.text || '',
+                    userText: event.text || this._state.userText,
+                    partialTranscript: '',
+                    processingMessage: '',
+                });
                 break;
             case 'answer_start':
-                this._answerText = '';
-                this._answerCursor = true;
-                this._stateMachine.setState(State.ANSWERING);
-                this._notify();
+                this._setState({
+                    status: State.ANSWERING,
+                    answer: '',
+                    answerStreaming: true,
+                });
                 break;
             case 'answer_delta':
-                this._answerText += event.text || '';
-                this._notify();
+                this._setState({
+                    status: State.ANSWERING,
+                    answer: this._state.answer + (event.text || ''),
+                    answerStreaming: true,
+                });
                 break;
             case 'answer_done':
-                this._answerCursor = false;
-                this._notify();
+                this._setState({
+                    status: State.ANSWERING,
+                    answerStreaming: false,
+                });
+                this._playSound('answer-done');
                 break;
             case 'command_approval':
-                this._commandApproval = {
-                    command: event.command || '',
-                    reason: event.reason || null,
-                    risk: event.risk || 'low',
-                    workingDirectory: event.working_directory || '.',
-                    expectedEffect: event.expected_effect || '',
-                };
-                this._stateMachine.setState(State.COMMAND_APPROVAL);
-                this._notify();
+                this._setState({
+                    status: State.COMMAND_APPROVAL,
+                    commandApproval: {
+                        command: event.command || '',
+                        reason: event.reason || null,
+                        risk: event.risk || 'low',
+                        workingDirectory: event.working_directory || '.',
+                        expectedEffect: event.expected_effect || '',
+                    },
+                });
                 break;
             case 'command_running':
-                this._stateMachine.setState(State.COMMAND_RUNNING);
-                this._notify();
+                this._setStatus(State.COMMAND_RUNNING);
                 break;
             case 'command_result':
-                this._commandResult = {
-                    exitCode: event.exit_code,
-                    stdout: event.stdout || '',
-                    stderr: event.stderr || '',
-                };
-                this._notify();
+                {
+                    const result = {
+                        command: event.command || this._state.commandApproval?.command || '',
+                        exitCode: event.exit_code,
+                        stdout: event.stdout || '',
+                        stderr: event.stderr || '',
+                    };
+                    this._setState({
+                        status: State.RESULT,
+                        commandResult: result,
+                    });
+                    this._notifyCommandDone(event);
+                }
                 break;
             case 'operation_cancelled':
-                this._clearSession();
-                this._stateMachine.setState(State.IDLE);
-                this._notify();
+                this._clearCancelTimer();
+                this._playSound('cancel');
+                this._resetToIdle();
                 break;
             case 'error':
-                this._errorMessage = event.message || 'Unknown error';
-                this._stateMachine.setState(State.ERROR);
-                this._notify();
+                this._setState({
+                    status: State.ERROR,
+                    error: event.message || 'Unknown error',
+                    lastBackendError: event.message || 'Unknown backend error',
+                });
                 break;
             case 'hello':
-                this._connection.send({type: 'get_settings'});
-                this._stateMachine.setState(State.IDLE);
-                this._notify();
+                this._send({type: 'get_settings'});
+                if (!this._state.backendConnected) {
+                    this._setState({
+                        status: State.IDLE,
+                        backendConnected: true,
+                        backendStarting: false,
+                    });
+                }
+                break;
+            case 'backend_status':
+                if (event.status === 'connected')
+                    this._setState({backendConnected: true});
+                break;
+            case 'settings':
+            case 'settings_saved':
+                this._setState({
+                    settings: event.settings || null,
+                    conversationMode: !!event.settings?.conversation?.enabled,
+                });
+                break;
+            case 'model_profiles':
+                break;
+            case 'model_profile_set':
+                break;
+            case 'conversation_cleared':
+                this._setState({
+                    userText: '',
+                    transcript: '',
+                    answer: '',
+                    answerStreaming: false,
+                    status: State.IDLE,
+                });
+                break;
+            case 'screen_capture_started':
+            case 'screen_capture_done':
+            case 'screen_context_started':
+            case 'screen_ocr_done':
+            case 'screen_context_ready':
+            case 'screen_context_error':
+                break;
+            case 'settings_error':
+                this._setState({
+                    lastBackendError: event.message || 'Settings update failed',
+                });
+                log(`[vox2ai] settings update failed: ${event.message || 'unknown error'}`);
+                break;
+            case 'diagnostics':
+                this._setState({diagnostics: event.diagnostics || null});
                 break;
         }
     }
 
-    _handleState(event) {
+    _handleStateEvent(event) {
         const s = event.state;
-        this._errorMessage = null;
+        if (s !== 'ready' && s !== 'error')
+            this._setState({error: null});
         switch (s) {
             case 'listening':
-                this._clearSession();
-                this._stateMachine.setState(State.LISTENING);
+                this._clearSession(false);
+                this._setStatus(State.LISTENING);
                 break;
             case 'transcribing':
-                this._stateMachine.setState(State.TRANSCRIBING);
+                this._setState({
+                    status: State.TRANSCRIBING,
+                    processingMessage: this._state.processingMessage || 'Processing speech...',
+                });
                 break;
             case 'thinking':
-                this._stateMachine.setState(State.THINKING);
+                this._setStatus(State.THINKING);
                 break;
             case 'streaming_answer':
-                this._stateMachine.setState(State.ANSWERING);
+                this._setStatus(State.ANSWERING);
                 break;
             case 'approval_required':
-                // handled by command_approval event
+                break;
+            case 'running_command':
+                this._setStatus(State.COMMAND_RUNNING);
                 break;
             case 'error':
-                this._errorMessage = event.message || 'Backend error';
-                this._stateMachine.setState(State.ERROR);
+                this._setState({
+                    status: State.ERROR,
+                    error: event.message || 'Backend error',
+                    lastBackendError: event.message || 'Backend error',
+                });
                 break;
             case 'ready':
-                this._stateMachine.setState(State.IDLE);
+                if (this._state.status === State.ANSWERING && this._state.answer)
+                    this._setState({answerStreaming: false});
+                else if (this._state.status === State.ERROR && this._state.error)
+                    this._setState({backendConnected: true, backendStarting: false});
+                else if (this._state.status !== State.RESULT)
+                    this._setStatus(State.IDLE);
                 break;
         }
-        this._notify();
     }
 
     _handleAudioLevel(event) {
-        if (this.state !== State.LISTENING)
+        if (this._state.status !== State.LISTENING)
             return;
-        this._levels = [...this._levels.slice(-31), event.rms || 0];
-        this._notify();
+        const level = Number.isFinite(event.level)
+            ? event.level
+            : Math.max(0, Math.min(1, event.rms || 0));
+        const rms = Math.max(0, Math.min(1, level || 0));
+        const peak = Math.max(0, Math.min(1, event.peak || 0));
+        this._setState({
+            audioLevel: rms,
+            audioPeak: peak,
+            lastAudioLevelAt: GLib.get_monotonic_time(),
+            audioEventsReceived: true,
+        });
     }
 
-    _clearSession() {
-        this._transcript = '';
-        this._partialTranscript = '';
-        this._answerText = '';
-        this._answerCursor = false;
-        this._commandApproval = null;
-        this._commandResult = null;
-        this._errorMessage = null;
-        this._levels = [];
+    _handleVoiceActivity(event) {
+        if (this._state.status !== State.LISTENING)
+            return;
+
+        let lastVoiceActivity = 'waiting';
+        if (event.active)
+            lastVoiceActivity = 'active';
+        else if (event.speech_started)
+            lastVoiceActivity = 'silent';
+
+        this._setState({
+            voiceActive: !!event.active,
+            speechStarted: !!event.speech_started,
+            silenceMs: Math.max(0, event.silence_ms || 0),
+            lastVoiceActivity,
+        });
+    }
+
+    _resetToIdle() {
+        this._resetState();
+        this._setStatus(State.IDLE);
+    }
+
+    _resetState() {
+        this._setState({
+            inputText: '',
+            userText: '',
+            transcript: '',
+            partialTranscript: '',
+            answer: '',
+            answerStreaming: false,
+            audioLevel: 0,
+            audioPeak: 0,
+            lastAudioLevelAt: 0,
+            audioEventsReceived: false,
+            voiceActive: false,
+            speechStarted: false,
+            silenceMs: 0,
+            lastVoiceActivity: 'unknown',
+            processingMessage: '',
+            recordingStopReason: '',
+            commandApproval: null,
+            commandResult: null,
+            error: null,
+            copyFeedback: '',
+            screenContext: {
+                id: null,
+                mode: null,
+                status: 'idle',
+                error: null,
+            },
+        });
+    }
+
+    _clearSession(clearStatus = true) {
+        const patch = {
+            transcript: '',
+            partialTranscript: '',
+            answer: '',
+            answerStreaming: false,
+            audioLevel: 0,
+            audioPeak: 0,
+            lastAudioLevelAt: 0,
+            voiceActive: false,
+            speechStarted: false,
+            silenceMs: 0,
+            lastVoiceActivity: 'unknown',
+            processingMessage: '',
+            recordingStopReason: '',
+            commandApproval: null,
+            commandResult: null,
+            error: null,
+            screenContext: {
+                id: null,
+                mode: null,
+                status: 'idle',
+                error: null,
+            },
+        };
+        if (clearStatus)
+            patch.userText = '';
+        this._setState(patch);
+    }
+
+    _clearCancelTimer() {
+        if (this._cancelSafetyTimer) {
+            GLib.source_remove(this._cancelSafetyTimer);
+            this._cancelSafetyTimer = null;
+        }
+    }
+
+    _readRuntimeSettings() {
+        return {
+            autoFinishEnabled: safeGet(this._settings, 'get_boolean', 'auto-finish-recording', true),
+            silenceTimeoutMs: safeGet(this._settings, 'get_int', 'silence-timeout-ms', 2000),
+            minRecordingMs: safeGet(this._settings, 'get_int', 'min-recording-ms', 700),
+            maxRecordingMs: safeGet(this._settings, 'get_int', 'max-recording-ms', 60000),
+            voiceActivityThreshold: safeGet(this._settings, 'get_double', 'voice-activity-threshold', 0.025),
+            safeMode: safeGet(this._settings, 'get_boolean', 'safe-mode', false),
+        };
+    }
+
+    _onStatusChanged(_oldStatus, newStatus) {
+        if (newStatus === State.LISTENING)
+            this._playSound('start');
+        else if (newStatus === State.ERROR)
+            this._playSound('error');
+    }
+
+    _playSound(kind) {
+        if (!this._soundFeedback)
+            return;
+        try {
+            if (kind === 'start')
+                this._soundFeedback.playRecordingStarted();
+            else if (kind === 'stop')
+                this._soundFeedback.playRecordingStopped();
+            else if (kind === 'auto-stop')
+                this._soundFeedback.playAutoStopped();
+            else if (kind === 'cancel')
+                this._soundFeedback.playCancelled();
+            else if (kind === 'copy')
+                this._soundFeedback.playCopySuccess();
+            else if (kind === 'answer-done')
+                this._soundFeedback.playAnswerDone();
+            else if (kind === 'error')
+                this._soundFeedback.playError();
+        } catch (e) {
+            log(`[vox2ai] sound feedback error: ${e}`);
+        }
+    }
+
+    destroy() {
+        this._clearCancelTimer();
+        if (this._copyFeedbackTimer) {
+            GLib.source_remove(this._copyFeedbackTimer);
+            this._copyFeedbackTimer = null;
+        }
+        this.disconnect();
+        this._listeners.clear();
     }
 };

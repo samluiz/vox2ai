@@ -3,11 +3,23 @@
   <schema id="org.gnome.shell.extensions.vox2ai"
           path="/org/gnome/shell/extensions/vox2ai/">
 
+    <!-- Safe mode -->
+    <key name="safe-mode" type="b">
+      <default>false</default>
+      <summary>Safe mode</summary>
+      <description>Disable all advanced features. Only panel indicator, basic popup, backend status, typed prompt, and voice start/stop/cancel.</description>
+    </key>
+
     <!-- Global shortcut keybinding -->
     <key name="vox2ai-activate" type="as">
       <default><![CDATA[["<Control>space"]]]></default>
       <summary>Activate vox2ai</summary>
       <description>Global shortcut to activate the assistant.</description>
+    </key>
+    <key name="ask-screen-shortcut" type="as">
+      <default><![CDATA[["<Control><Shift>space"]]]></default>
+      <summary>Ask about screen</summary>
+      <description>Global shortcut to capture the screen for a question.</description>
     </key>
 
     <!-- Activation -->
@@ -19,34 +31,155 @@
     <key name="show-panel-indicator" type="b">
       <default>true</default>
       <summary>Show panel indicator</summary>
+      <description>Show vox2ai in the GNOME top panel.</description>
     </key>
+
+    <!-- Feature gating (advanced features disabled by default for stability) -->
+    <key name="ask-screen-shortcut-enabled" type="b">
+      <default>false</default>
+      <summary>Ask about screen shortcut enabled</summary>
+      <description>Enable the Ctrl+Shift+Space shortcut for screen capture questions.</description>
+    </key>
+
+    <key name="screen-context-enabled" type="b">
+      <default>false</default>
+      <summary>Ask about screen enabled</summary>
+      <description>Allow explicit screenshot capture for screen questions.</description>
+    </key>
+
+    <key name="model-profiles-enabled" type="b">
+      <default>false</default>
+      <summary>Model profiles enabled</summary>
+      <description>Allow switching between model profiles. Disabled by default for stability.</description>
+    </key>
+
+    <!-- Backend service connection -->
     <key name="auto-start-backend" type="b">
       <default>true</default>
       <summary>Auto-start backend service</summary>
+      <description>Start the vox2ai systemd user service when needed.</description>
     </key>
-    <key name="compact-density" type="b">
-      <default>true</default>
-      <summary>Compact UI density</summary>
-    </key>
-
-    <!-- Provider -->
-    <key name="provider-id" type="s">
-      <default>"openai"</default>
-    </key>
-    <key name="base-url" type="s">
-      <default>"https://api.openai.com/v1"</default>
-    </key>
-    <key name="model" type="s">
-      <default>"gpt-4.1-mini"</default>
-    </key>
-
-    <!-- Backend -->
     <key name="backend-host" type="s">
       <default>"127.0.0.1"</default>
+      <summary>Backend host</summary>
+      <description>WebSocket backend host.</description>
     </key>
     <key name="backend-port" type="i">
       <default>8765</default>
+      <summary>Backend port</summary>
+      <description>WebSocket backend port.</description>
       <range min="1024" max="65535"/>
+    </key>
+    <key name="backend-service-name" type="s">
+      <default>"vox2ai.service"</default>
+      <summary>Backend systemd service name</summary>
+      <description>User systemd unit that runs the vox2ai backend.</description>
+    </key>
+
+    <!-- UI -->
+    <key name="compact-density" type="b">
+      <default>true</default>
+      <summary>Compact UI density</summary>
+      <description>Use a more compact assistant popup layout.</description>
+    </key>
+
+    <!-- Voice activity / feedback -->
+    <key name="auto-finish-recording" type="b">
+      <default>true</default>
+      <summary>Auto-finish recording</summary>
+      <description>Stop and send recording after speech ends.</description>
+    </key>
+    <key name="silence-timeout-ms" type="i">
+      <default>2000</default>
+      <summary>Silence timeout</summary>
+      <description>Milliseconds of silence after speech before auto-send.</description>
+      <range min="500" max="10000"/>
+    </key>
+    <key name="min-recording-ms" type="i">
+      <default>700</default>
+      <summary>Minimum recording duration</summary>
+      <description>Minimum recording duration before auto-finish can trigger.</description>
+      <range min="100" max="10000"/>
+    </key>
+    <key name="max-recording-ms" type="i">
+      <default>60000</default>
+      <summary>Maximum recording duration</summary>
+      <description>Maximum recording duration before auto-send.</description>
+      <range min="1000" max="300000"/>
+    </key>
+    <key name="voice-activity-threshold" type="d">
+      <default>0.025</default>
+      <summary>Voice activity threshold</summary>
+      <description>RMS threshold used to decide whether speech is active.</description>
+      <range min="0.0001" max="0.2"/>
+    </key>
+    <key name="sound-feedback-enabled" type="b">
+      <default>true</default>
+      <summary>Sound feedback enabled</summary>
+      <description>Play short feedback sounds for recording and copy actions.</description>
+    </key>
+
+    <!-- Conversation / history -->
+    <key name="conversation-mode" type="b">
+      <default>false</default>
+      <summary>Conversation mode</summary>
+      <description>Keep recent turns as context for follow-up questions.</description>
+    </key>
+    <key name="conversation-max-turns" type="i">
+      <default>8</default>
+      <summary>Conversation max turns</summary>
+      <description>Maximum number of turns kept in memory.</description>
+      <range min="1" max="20"/>
+    </key>
+    <key name="history-enabled" type="b">
+      <default>true</default>
+      <summary>Recent history enabled</summary>
+      <description>Keep a small recent list for this session.</description>
+    </key>
+    <key name="history-persist" type="b">
+      <default>false</default>
+      <summary>Persist recent history</summary>
+      <description>Save recent text history locally between sessions.</description>
+    </key>
+    <key name="history-max-items" type="i">
+      <default>10</default>
+      <summary>History max items</summary>
+      <description>Maximum number of recent items.</description>
+      <range min="1" max="50"/>
+    </key>
+
+    <!-- Notifications -->
+    <key name="notifications-enabled" type="b">
+      <default>true</default>
+      <summary>Notifications enabled</summary>
+      <description>Show GNOME notifications when useful.</description>
+    </key>
+    <key name="notify-answer-ready" type="b">
+      <default>true</default>
+      <summary>Notify answer ready</summary>
+      <description>Notify when an answer completes while the popup is closed.</description>
+    </key>
+    <key name="notify-command-complete" type="b">
+      <default>true</default>
+      <summary>Notify command complete</summary>
+      <description>Notify when command execution finishes while the popup is closed.</description>
+    </key>
+    <key name="notify-errors" type="b">
+      <default>true</default>
+      <summary>Notify errors</summary>
+      <description>Show notifications for backend and screen-context errors.</description>
+    </key>
+
+    <!-- Screen context -->
+    <key name="screen-capture-method" type="s">
+      <default>"auto"</default>
+      <summary>Screen capture method</summary>
+      <description>Screen capture backend method.</description>
+    </key>
+    <key name="screen-capture-save-debug" type="b">
+      <default>false</default>
+      <summary>Save screenshots for debug</summary>
+      <description>Keep captured screenshots for debugging. Off by default.</description>
     </key>
 
   </schema>

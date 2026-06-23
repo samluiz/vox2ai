@@ -33,6 +33,30 @@ class AudioLevelEvent:
     type: Literal["audio_level"] = "audio_level"
     rms: float = 0.0
     peak: float = 0.0
+    level: float = 0.0
+
+
+@dataclass
+class VoiceActivityEvent:
+    type: Literal["voice_activity"] = "voice_activity"
+    active: bool = False
+    rms: float = 0.0
+    peak: float = 0.0
+    speech_started: bool = False
+    silence_ms: int = 0
+
+
+@dataclass
+class RecordingAutoStoppingEvent:
+    type: Literal["recording_auto_stopping"] = "recording_auto_stopping"
+    reason: str = "silence"
+    silence_ms: int = 0
+
+
+@dataclass
+class RecordingStoppedEvent:
+    type: Literal["recording_stopped"] = "recording_stopped"
+    reason: str = "manual"
 
 
 @dataclass
@@ -168,11 +192,67 @@ class ConversationClearedEvent:
     type: Literal["conversation_cleared"] = "conversation_cleared"
 
 
+@dataclass
+class ModelProfilesEvent:
+    type: Literal["model_profiles"] = "model_profiles"
+    profiles: list[dict[str, Any]] = field(default_factory=list)
+    active: str = "fast"
+
+
+@dataclass
+class ModelProfileSetEvent:
+    type: Literal["model_profile_set"] = "model_profile_set"
+    active: str = "fast"
+
+
+@dataclass
+class ScreenCaptureStartedEvent:
+    type: Literal["screen_capture_started"] = "screen_capture_started"
+
+
+@dataclass
+class ScreenCaptureDoneEvent:
+    type: Literal["screen_capture_done"] = "screen_capture_done"
+    context_id: str = ""
+    width: int = 0
+    height: int = 0
+
+
+@dataclass
+class ScreenContextStartedEvent:
+    type: Literal["screen_context_started"] = "screen_context_started"
+    mode: str = "ocr"
+
+
+@dataclass
+class ScreenOcrDoneEvent:
+    type: Literal["screen_ocr_done"] = "screen_ocr_done"
+    engine: str = ""
+    text_length: int = 0
+    confidence: float = 0.0
+
+
+@dataclass
+class ScreenContextReadyEvent:
+    type: Literal["screen_context_ready"] = "screen_context_ready"
+    context_id: str = ""
+    mode: str = "ocr"
+
+
+@dataclass
+class ScreenContextErrorEvent:
+    type: Literal["screen_context_error"] = "screen_context_error"
+    message: str = ""
+
+
 BackendEvent = (
     HelloEvent
     | StateEvent
     | BackendStatusEvent
     | AudioLevelEvent
+    | VoiceActivityEvent
+    | RecordingAutoStoppingEvent
+    | RecordingStoppedEvent
     | TranscriptEvent
     | PartialTranscriptEvent
     | OperationCancelledEvent
@@ -193,6 +273,14 @@ BackendEvent = (
     | DiagnosticsEvent
     | ContextPreviewEvent
     | ConversationClearedEvent
+    | ModelProfilesEvent
+    | ModelProfileSetEvent
+    | ScreenCaptureStartedEvent
+    | ScreenCaptureDoneEvent
+    | ScreenContextStartedEvent
+    | ScreenOcrDoneEvent
+    | ScreenContextReadyEvent
+    | ScreenContextErrorEvent
 )
 
 
@@ -254,6 +342,7 @@ class SubmitTextPromptCommand:
     type: Literal["submit_text_prompt"] = "submit_text_prompt"
     text: str = ""
     context: dict[str, Any] = field(default_factory=dict)
+    conversation_mode: bool | None = None
 
 
 @dataclass
@@ -319,6 +408,56 @@ class GetContextPreviewCommand:
     type: Literal["get_context_preview"] = "get_context_preview"
 
 
+@dataclass
+class SetConversationModeCommand:
+    type: Literal["set_conversation_mode"] = "set_conversation_mode"
+    enabled: bool = False
+
+
+@dataclass
+class GetModelProfilesCommand:
+    type: Literal["get_model_profiles"] = "get_model_profiles"
+
+
+@dataclass
+class SetModelProfileCommand:
+    type: Literal["set_model_profile"] = "set_model_profile"
+    profile: str = ""
+
+
+@dataclass
+class RequestCommandApprovalCommand:
+    type: Literal["request_command_approval"] = "request_command_approval"
+    command: str = ""
+    reason: str = ""
+
+
+@dataclass
+class ExplainCommandCommand:
+    type: Literal["explain_command"] = "explain_command"
+    command: str = ""
+
+
+@dataclass
+class CaptureScreenContextCommand:
+    type: Literal["capture_screen_context"] = "capture_screen_context"
+    mode: str = "auto"
+
+
+@dataclass
+class SubmitScreenQuestionCommand:
+    type: Literal["submit_screen_question"] = "submit_screen_question"
+    question: str = ""
+    context_id: str = ""
+
+
+@dataclass
+class AskAboutScreenCommand:
+    type: Literal["ask_about_screen"] = "ask_about_screen"
+    question: str = ""
+    mode: str = "auto"
+
+
 FrontendCommand = (
     PingCommand
     | StartRecordingCommand
@@ -339,6 +478,14 @@ FrontendCommand = (
     | GetDiagnosticsCommand
     | ClearConversationCommand
     | GetContextPreviewCommand
+    | SetConversationModeCommand
+    | GetModelProfilesCommand
+    | SetModelProfileCommand
+    | RequestCommandApprovalCommand
+    | ExplainCommandCommand
+    | CaptureScreenContextCommand
+    | SubmitScreenQuestionCommand
+    | AskAboutScreenCommand
 )
 
 
@@ -379,6 +526,14 @@ def parse_command(raw: str) -> FrontendCommand | ErrorEvent:
         "get_diagnostics": GetDiagnosticsCommand,
         "clear_conversation": ClearConversationCommand,
         "get_context_preview": GetContextPreviewCommand,
+        "set_conversation_mode": SetConversationModeCommand,
+        "get_model_profiles": GetModelProfilesCommand,
+        "set_model_profile": SetModelProfileCommand,
+        "request_command_approval": RequestCommandApprovalCommand,
+        "explain_command": ExplainCommandCommand,
+        "capture_screen_context": CaptureScreenContextCommand,
+        "submit_screen_question": SubmitScreenQuestionCommand,
+        "ask_about_screen": AskAboutScreenCommand,
     }
 
     cls = mapping.get(typ)

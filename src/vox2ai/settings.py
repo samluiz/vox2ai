@@ -9,15 +9,13 @@ from __future__ import annotations
 import os
 
 from vox2ai.config import AppConfig
+from vox2ai.credentials import resolve_api_key
 from vox2ai.secrets import get_secret_store, mask_api_key
 
 
 def api_key_configured(config: AppConfig) -> bool:
-    """Return True when an API key is available from env or the secret store."""
-    if get_secret_store().get("api_key"):
-        return True
-    key_env = config.assistant.api_key_env
-    return bool(key_env and os.environ.get(key_env))
+    """Return True when an API key is available from any supported source."""
+    return bool(resolve_api_key(config.assistant))
 
 
 def sanitize_config(config: AppConfig) -> dict[str, object]:
@@ -29,6 +27,7 @@ def sanitize_config(config: AppConfig) -> dict[str, object]:
     configured_key = api_key_configured(config)
     env_key = os.environ.get(config.assistant.api_key_env, "")
     secret_key = get_secret_store().get("api_key") or ""
+    config_key = config.assistant.api_key
     return {
         "assistant": {
             "provider": config.assistant.provider,
@@ -38,7 +37,7 @@ def sanitize_config(config: AppConfig) -> dict[str, object]:
             "timeout_seconds": config.assistant.timeout_seconds,
             "api_key_env": config.assistant.api_key_env,
             "api_key_configured": configured_key,
-            "api_key_preview": mask_api_key(secret_key or env_key or None),
+            "api_key_preview": mask_api_key(env_key or secret_key or config_key or None),
         },
         "voice": {
             "language_mode": config.voice.language_mode,
@@ -46,6 +45,13 @@ def sanitize_config(config: AppConfig) -> dict[str, object]:
             "allowed_languages": list(config.voice.allowed_languages),
             "min_language_probability": config.voice.min_language_probability,
             "whisper_model": config.voice.whisper_model,
+            "input_device": config.voice.input_device,
+            "auto_finish_enabled": config.voice.auto_finish_enabled,
+            "silence_timeout_ms": config.voice.silence_timeout_ms,
+            "speech_start_required": config.voice.speech_start_required,
+            "min_recording_ms": config.voice.min_recording_ms,
+            "max_recording_ms": config.voice.max_recording_ms,
+            "voice_activity_threshold": config.voice.voice_activity_threshold,
             "language": config.voice.language,
         },
         "recording": {
@@ -90,6 +96,7 @@ def sanitize_config(config: AppConfig) -> dict[str, object]:
         "conversation": {
             "enabled": config.conversation.enabled,
             "max_messages": config.conversation.max_messages,
+            "max_turns": config.conversation.max_turns,
         },
         "context": {
             "clipboard_enabled": config.context.clipboard_enabled,
@@ -97,6 +104,37 @@ def sanitize_config(config: AppConfig) -> dict[str, object]:
             "max_clipboard_chars": config.context.max_clipboard_chars,
             "active_window_enabled": config.context.active_window_enabled,
             "selected_text_enabled": config.context.selected_text_enabled,
+            "screen_context_enabled": config.context.screen_context_enabled,
+            "screen_capture_method": config.context.screen_capture_method,
+            "screen_capture_save_debug": config.context.screen_capture_save_debug,
+        },
+        "history": {
+            "enabled": config.history.enabled,
+            "persist": config.history.persist,
+            "max_items": config.history.max_items,
+        },
+        "notifications": {
+            "enabled": config.notifications.enabled,
+            "notify_answer_ready": config.notifications.notify_answer_ready,
+            "notify_command_complete": config.notifications.notify_command_complete,
+            "notify_errors": config.notifications.notify_errors,
+        },
+        "terminal": {
+            "command": config.terminal.command,
+            "run_mode": config.terminal.run_mode,
+        },
+        "model_profiles": {
+            "active": config.model_profiles.active,
+            "profiles": {
+                pid: {
+                    "label": profile.label,
+                    "provider": profile.provider,
+                    "base_url": profile.base_url,
+                    "model": profile.model,
+                    "supports_vision": profile.supports_vision,
+                }
+                for pid, profile in config.model_profiles.profiles.items()
+            },
         },
         "quick_actions": {
             "enabled": config.quick_actions.enabled,

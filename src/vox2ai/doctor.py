@@ -6,6 +6,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from vox2ai.config import AppConfig, config_path, load_config
+from vox2ai.credentials import resolve_api_key
 from vox2ai.errors import ConfigError, Vox2AIError
 
 
@@ -36,9 +37,14 @@ def run_doctor() -> None:
     # 3. API key env var
     if config_ok and config is not None:
         key_env = config.assistant.api_key_env
-        key_value = os.environ.get(key_env)
+        key_value = resolve_api_key(config.assistant)
         if key_value:
-            _check(f"API key ({key_env})", True, f"Set (${key_env})")
+            source = "config/secret/env"
+            if os.environ.get(key_env):
+                source = f"${key_env}"
+            elif config.assistant.api_key:
+                source = "config.toml"
+            _check(f"API key ({key_env})", True, f"Set ({source})")
         else:
             _check(f"API key ({key_env})", False, f"Not set (${key_env} is empty or missing)")
     else:
@@ -49,8 +55,7 @@ def run_doctor() -> None:
 
     # 5. LLM health check
     if config_ok and config is not None:
-        key_env = config.assistant.api_key_env
-        key_value = os.environ.get(key_env)
+        key_value = resolve_api_key(config.assistant)
         if key_value:
             _check_llm(config)
 
@@ -219,6 +224,3 @@ def _check_evdev() -> None:
         _check("Global key capture (evdev)", True, "not configured (backend=window)")
     except Exception as e:
         _check("Global key capture (evdev)", True, str(e))
-
-
-

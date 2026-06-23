@@ -9,6 +9,7 @@ import numpy as np
 import sounddevice as sd
 import soundfile as sf
 
+from vox2ai.audio_input import start_input_stream
 from vox2ai.errors import AudioError
 
 
@@ -30,7 +31,11 @@ def _compute_rms(audio: np.ndarray) -> float:
     return float(np.sqrt(np.mean(audio**2)))
 
 
-def _record_frames(sample_rate: int, stop_event: threading.Event | None = None) -> list[np.ndarray]:
+def _record_frames(
+    sample_rate: int,
+    stop_event: threading.Event | None = None,
+    input_device: str = "",
+) -> list[np.ndarray]:
     """Record mono float32 frames until stop condition.
 
     Frames are buffered and later concatenated because sounddevice
@@ -49,21 +54,27 @@ def _record_frames(sample_rate: int, stop_event: threading.Event | None = None) 
         frames.append(indata.copy())
 
     try:
-        stream = sd.InputStream(
-            samplerate=sample_rate,
+        stream = start_input_stream(
+            sample_rate=sample_rate,
             channels=1,
             dtype="float32",
             callback=callback,
+            device=input_device,
         )
     except sd.PortAudioError as e:
         raise AudioError(f"Could not open audio input stream: {e}") from e
 
-    if stop_event is not None:
-        with stream:
+    try:
+        if stop_event is not None:
             stop_event.wait()
-    else:
-        with stream, contextlib.suppress(EOFError, KeyboardInterrupt):
-            input()
+        else:
+            with contextlib.suppress(EOFError, KeyboardInterrupt):
+                input()
+    finally:
+        with contextlib.suppress(Exception):
+            stream.stop()
+        with contextlib.suppress(Exception):
+            stream.close()
 
     return frames
 
@@ -101,9 +112,10 @@ def record_until_enter(
     sample_rate: int,
     min_duration_seconds: float = 0.7,
     min_rms: float = 0.003,
+    input_device: str = "",
 ) -> RecordedAudio:
     """Record from default mic until Enter is pressed, then validate."""
-    frames = _record_frames(sample_rate)
+    frames = _record_frames(sample_rate, input_device=input_device)
     return _validate_and_save(frames, sample_rate, min_duration_seconds, min_rms)
 
 
@@ -112,7 +124,8 @@ def record_until_event(
     stop_event: threading.Event,
     min_duration_seconds: float = 0.7,
     min_rms: float = 0.003,
+    input_device: str = "",
 ) -> RecordedAudio:
     """Record from default mic until *stop_event* is set, then validate."""
-    frames = _record_frames(sample_rate, stop_event)
+    frames = _record_frames(sample_rate, stop_event, input_device=input_device)
     return _validate_and_save(frames, sample_rate, min_duration_seconds, min_rms)

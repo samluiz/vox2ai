@@ -40,6 +40,11 @@ export const BackendService = {
         return run(['is-active', SERVICE_NAME]);
     },
 
+    async isInstalled() {
+        const result = await run(['list-unit-files', SERVICE_NAME]);
+        return result.ok && result.stdout.includes(SERVICE_NAME);
+    },
+
     async start() {
         return run(['start', SERVICE_NAME]);
     },

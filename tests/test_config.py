@@ -32,7 +32,12 @@ def test_default_config_creation() -> None:
     assert path.exists()
     content = path.read_text()
     assert 'backend = "window"' in content
+    assert 'api_key = ""' in content
     assert 'whisper_model = "small"' in content
+    assert 'input_device = ""' in content
+    assert "auto_finish_enabled = true" in content
+    assert "silence_timeout_ms = 2000" in content
+    assert "voice_activity_threshold = 0.025" in content
     assert "[transcription]" in content
     assert "[performance]" in content
     assert "[debug]" in content
@@ -48,6 +53,10 @@ def test_default_config_creation() -> None:
     assert "[onboarding]" in content
     assert "[conversation]" in content
     assert "[context]" in content
+    assert "screen_context_enabled = true" in content
+    assert "[history]" in content
+    assert "[notifications]" in content
+    assert "[model_profiles]" in content
     assert "[quick_actions]" in content
     assert "[backend_service]" in content
     assert 'host = "127.0.0.1"' in content
@@ -145,6 +154,13 @@ def test_app_config_defaults() -> None:
     assert cfg.overlay.inactive_opacity < cfg.overlay.active_opacity
     assert cfg.overlay.fade_after_seconds == 6
     assert cfg.voice.whisper_model == "small"
+    assert cfg.voice.input_device == ""
+    assert cfg.voice.auto_finish_enabled is True
+    assert cfg.voice.silence_timeout_ms == 2000
+    assert cfg.voice.speech_start_required is True
+    assert cfg.voice.min_recording_ms == 700
+    assert cfg.voice.max_recording_ms == 60000
+    assert cfg.voice.voice_activity_threshold == 0.025
     assert cfg.recording.activation_mode == "hold-to-talk"
     assert cfg.recording.shortcut == "Ctrl"
     assert cfg.backend_service.host == "127.0.0.1"
@@ -156,8 +172,15 @@ def test_app_config_defaults() -> None:
     assert cfg.general.start_hidden is True
     assert cfg.general.start_at_login is False
     assert cfg.onboarding.completed is False
-    assert cfg.conversation.enabled is True
+    assert cfg.conversation.enabled is False
+    assert cfg.conversation.max_turns == 8
     assert cfg.context.clipboard_enabled is True
+    assert cfg.context.screen_context_enabled is True
+    assert cfg.history.enabled is True
+    assert cfg.history.persist is False
+    assert cfg.notifications.enabled is True
+    assert cfg.model_profiles.active == "fast"
+    assert cfg.model_profiles.profiles["vision"].supports_vision is True
     assert cfg.quick_actions.enabled is True
     assert cfg.commands.show_risk_level is True
     assert cfg.performance.preload_whisper is True
@@ -188,6 +211,7 @@ sample_rate = 8000
     cfg_path.write_text(old_toml)
     cfg = load_config()
     assert cfg.assistant.provider == "test"
+    assert cfg.assistant.api_key == ""
     assert cfg.voice.language == "en"
     # New sections get defaults
     assert cfg.activation.backend == "window"

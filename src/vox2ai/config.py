@@ -15,6 +15,7 @@ DEFAULT_CONFIG_TOML = """\
 provider = "openai-compatible"
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
+api_key = ""
 model = "gpt-4.1-mini"
 temperature = 0.2
 timeout_seconds = 60
@@ -28,8 +29,15 @@ min_language_probability = 0.55
 stt_backend = "faster-whisper"
 whisper_model = "small"
 sample_rate = 16000
+input_device = ""
 min_duration_seconds = 0.7
 min_rms = 0.003
+auto_finish_enabled = true
+silence_timeout_ms = 2000
+speech_start_required = true
+min_recording_ms = 700
+max_recording_ms = 60000
+voice_activity_threshold = 0.025
 initial_prompt_enabled = true
 
 [activation]
@@ -118,8 +126,9 @@ launch_at_login = false
 completed = false
 
 [conversation]
-enabled = true
-max_messages = 10
+enabled = false
+max_messages = 16
+max_turns = 8
 
 [context]
 clipboard_enabled = true
@@ -127,6 +136,59 @@ clipboard_auto_detect = true
 max_clipboard_chars = 8000
 active_window_enabled = true
 selected_text_enabled = false
+screen_context_enabled = true
+screen_capture_method = "auto"
+screen_capture_save_debug = false
+
+[history]
+enabled = true
+persist = false
+max_items = 10
+
+[notifications]
+enabled = true
+notify_answer_ready = true
+notify_command_complete = true
+notify_errors = true
+
+[terminal]
+command = "gnome-terminal"
+run_mode = "copy-only"
+
+[model_profiles]
+active = "fast"
+
+[model_profiles.profiles.fast]
+label = "Fast"
+provider = "openai-compatible"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-4.1-mini"
+supports_vision = false
+
+[model_profiles.profiles.smart]
+label = "Smart"
+provider = "openai-compatible"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-4.1"
+supports_vision = false
+
+[model_profiles.profiles.vision]
+label = "Vision"
+provider = "openai-compatible"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-4.1-mini"
+supports_vision = true
+
+[model_profiles.profiles.local]
+label = "Local"
+provider = "openai-compatible"
+base_url = "http://localhost:11434/v1"
+api_key_env = "OLLAMA_API_KEY"
+model = "llama3.2"
+supports_vision = false
 
 [quick_actions]
 enabled = true
@@ -151,6 +213,7 @@ class AssistantConfig(BaseModel):
     provider: str = "openai-compatible"
     base_url: str = "https://api.openai.com/v1"
     api_key_env: str = "OPENAI_API_KEY"
+    api_key: str = ""
     model: str = "gpt-4.1-mini"
     temperature: float = 0.2
     timeout_seconds: int = 60
@@ -169,6 +232,11 @@ class AssistantConfig(BaseModel):
             raise ValueError("must not be empty")
         return v
 
+    @field_validator("api_key")
+    @classmethod
+    def strip_api_key(cls, v: str) -> str:
+        return v.strip()
+
     @field_validator("timeout_seconds")
     @classmethod
     def validate_timeout_positive(cls, v: int) -> int:
@@ -186,8 +254,15 @@ class VoiceConfig(BaseModel):
     stt_backend: str = "faster-whisper"
     whisper_model: str = "small"
     sample_rate: int = 16000
+    input_device: str = ""
     min_duration_seconds: float = 0.7
     min_rms: float = 0.003
+    auto_finish_enabled: bool = True
+    silence_timeout_ms: int = 2000
+    speech_start_required: bool = True
+    min_recording_ms: int = 700
+    max_recording_ms: int = 60000
+    voice_activity_threshold: float = 0.025
     initial_prompt_enabled: bool = True
 
     @field_validator("sample_rate")
@@ -196,6 +271,11 @@ class VoiceConfig(BaseModel):
         if v <= 0:
             raise ValueError("sample_rate must be positive")
         return v
+
+    @field_validator("input_device")
+    @classmethod
+    def strip_input_device(cls, v: str) -> str:
+        return v.strip()
 
     @field_validator("language")
     @classmethod
@@ -246,6 +326,20 @@ class VoiceConfig(BaseModel):
     def validate_min_rms(cls, v: float) -> float:
         if v < 0:
             raise ValueError("min_rms must be non-negative")
+        return v
+
+    @field_validator("silence_timeout_ms", "min_recording_ms", "max_recording_ms")
+    @classmethod
+    def validate_recording_ms(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("recording timing values must be positive")
+        return v
+
+    @field_validator("voice_activity_threshold")
+    @classmethod
+    def validate_voice_activity_threshold(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("voice_activity_threshold must be non-negative")
         return v
 
 
@@ -460,14 +554,15 @@ class OnboardingConfig(BaseModel):
 
 
 class ConversationConfig(BaseModel):
-    enabled: bool = True
-    max_messages: int = 10
+    enabled: bool = False
+    max_messages: int = 16
+    max_turns: int = 8
 
-    @field_validator("max_messages")
+    @field_validator("max_messages", "max_turns")
     @classmethod
     def validate_max_messages(cls, v: int) -> int:
         if v <= 0:
-            raise ValueError("conversation.max_messages must be positive")
+            raise ValueError("conversation limits must be positive")
         return v
 
 
@@ -477,12 +572,109 @@ class ContextConfig(BaseModel):
     max_clipboard_chars: int = 8000
     active_window_enabled: bool = True
     selected_text_enabled: bool = False
+    screen_context_enabled: bool = True
+    screen_capture_method: str = "auto"
+    screen_capture_save_debug: bool = False
 
     @field_validator("max_clipboard_chars")
     @classmethod
     def validate_max_clipboard_chars(cls, v: int) -> int:
         if v <= 0:
             raise ValueError("context.max_clipboard_chars must be positive")
+        return v
+
+    @field_validator("screen_capture_method")
+    @classmethod
+    def validate_screen_capture_method(cls, v: str) -> str:
+        allowed = {"auto", "gnome-screenshot", "portal"}
+        if v not in allowed:
+            raise ValueError(f"context.screen_capture_method must be one of {allowed}")
+        return v
+
+
+class HistoryConfig(BaseModel):
+    enabled: bool = True
+    persist: bool = False
+    max_items: int = 10
+
+    @field_validator("max_items")
+    @classmethod
+    def validate_max_items(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("history.max_items must be positive")
+        return v
+
+
+class NotificationsConfig(BaseModel):
+    enabled: bool = True
+    notify_answer_ready: bool = True
+    notify_command_complete: bool = True
+    notify_errors: bool = True
+
+
+class TerminalConfig(BaseModel):
+    command: str = "gnome-terminal"
+    run_mode: str = "copy-only"
+
+    @field_validator("run_mode")
+    @classmethod
+    def validate_run_mode(cls, v: str) -> str:
+        allowed = {"prefill", "copy-only"}
+        if v not in allowed:
+            raise ValueError(f"terminal.run_mode must be one of {allowed}")
+        return v
+
+
+class ModelProfileConfig(BaseModel):
+    label: str = ""
+    provider: str = ""
+    base_url: str = ""
+    api_key_env: str = ""
+    model: str = ""
+    supports_vision: bool = False
+
+
+class ModelProfilesConfig(BaseModel):
+    active: str = "fast"
+    profiles: dict[str, ModelProfileConfig] = Field(
+        default_factory=lambda: {
+            "fast": ModelProfileConfig(
+                label="Fast",
+                provider="openai-compatible",
+                base_url="https://api.openai.com/v1",
+                api_key_env="OPENAI_API_KEY",
+                model="gpt-4.1-mini",
+            ),
+            "smart": ModelProfileConfig(
+                label="Smart",
+                provider="openai-compatible",
+                base_url="https://api.openai.com/v1",
+                api_key_env="OPENAI_API_KEY",
+                model="gpt-4.1",
+            ),
+            "vision": ModelProfileConfig(
+                label="Vision",
+                provider="openai-compatible",
+                base_url="https://api.openai.com/v1",
+                api_key_env="OPENAI_API_KEY",
+                model="gpt-4.1-mini",
+                supports_vision=True,
+            ),
+            "local": ModelProfileConfig(
+                label="Local",
+                provider="openai-compatible",
+                base_url="http://localhost:11434/v1",
+                api_key_env="OLLAMA_API_KEY",
+                model="llama3.2",
+            ),
+        }
+    )
+
+    @field_validator("active")
+    @classmethod
+    def validate_active(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("model_profiles.active must be non-empty")
         return v
 
 
@@ -524,6 +716,10 @@ class AppConfig(BaseModel):
     onboarding: OnboardingConfig = Field(default_factory=OnboardingConfig)
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
+    history: HistoryConfig = Field(default_factory=HistoryConfig)
+    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
+    terminal: TerminalConfig = Field(default_factory=TerminalConfig)
+    model_profiles: ModelProfilesConfig = Field(default_factory=ModelProfilesConfig)
     quick_actions: QuickActionsConfig = Field(default_factory=QuickActionsConfig)
     debug: DebugConfig = Field(default_factory=DebugConfig)
 
@@ -581,14 +777,88 @@ def load_config() -> AppConfig:
     try:
         data = _migrate_voice_config(data)
         data = _migrate_general_config(data)
+        data = migrate_config_for_model_profiles(data)
         return AppConfig.model_validate(data)
     except Exception as e:
         raise ConfigError(f"Config validation failed: {e}") from e
+
+
+def _backup_config(path: Path) -> None:
+    """Create a timestamped backup before overwriting config."""
+    if not path.exists():
+        return
+    import shutil
+    from datetime import datetime
+
+    backup_dir = path.parent / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = backup_dir / f"config.backup.{ts}.toml"
+    shutil.copy2(path, backup_path)
+
+
+def migrate_config_for_model_profiles(data: dict) -> dict:
+    """Ensure existing provider/api_key settings are preserved in model_profiles.
+
+    If the user had an existing [assistant] config but no [model_profiles] section,
+    create model profiles derived from their existing provider/model/api_key.
+    Never overwrite existing model profiles.
+    """
+    if "model_profiles" in data and "profiles" in data.get("model_profiles", {}):
+        profiles = data["model_profiles"]["profiles"]
+        if isinstance(profiles, dict) and len(profiles) > 0:
+            return data  # Profiles already configured, nothing to migrate.
+
+    assistant = data.get("assistant", {})
+    if not isinstance(assistant, dict):
+        return data
+    provider = assistant.get("provider", "openai-compatible")
+    base_url = assistant.get("base_url", "https://api.openai.com/v1")
+    api_key_env = assistant.get("api_key_env", "OPENAI_API_KEY")
+    model = assistant.get("model", "gpt-4.1-mini")
+
+    profiles = {
+        "fast": {
+            "label": "Fast",
+            "provider": provider,
+            "base_url": base_url,
+            "api_key_env": api_key_env,
+            "model": model,
+            "supports_vision": False,
+        },
+        "smart": {
+            "label": "Smart",
+            "provider": provider,
+            "base_url": base_url,
+            "api_key_env": api_key_env,
+            "model": model,
+            "supports_vision": False,
+        },
+        "vision": {
+            "label": "Vision",
+            "provider": provider,
+            "base_url": base_url,
+            "api_key_env": api_key_env,
+            "model": model,
+            "supports_vision": True,
+        },
+        "local": {
+            "label": "Local",
+            "provider": "openai-compatible",
+            "base_url": "http://localhost:11434/v1",
+            "api_key_env": "OLLAMA_API_KEY",
+            "model": "llama3.2",
+            "supports_vision": False,
+        },
+    }
+    data["model_profiles"] = {"active": "fast", "profiles": profiles}
+    return data
 
 
 def save_config(config: AppConfig) -> None:
     path = config_path()
     parent = path.parent
     parent.mkdir(parents=True, exist_ok=True)
+    _backup_config(path)
     raw = config.model_dump()
     path.write_text(tomli_w.dumps(raw))

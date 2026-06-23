@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 
 import pytest
@@ -8,8 +9,16 @@ import pytest
 from vox2ai.agent import AgentDecision
 from vox2ai.commands import classify_command_risk, describe_command_effect
 from vox2ai.config import AppConfig
-from vox2ai.desktop_server import DesktopController, _format_prompt_context
+from vox2ai.desktop_server import (
+    DesktopController,
+    ServerState,
+    _format_prompt_context,
+    _normalize_audio_level,
+    _ocr_language,
+)
+from vox2ai.recorder import AudioLevel
 from vox2ai.secrets import FallbackStore, set_secret_store
+from vox2ai.settings import api_key_configured, sanitize_config
 
 
 def test_product_phase_config_defaults() -> None:
@@ -19,14 +28,27 @@ def test_product_phase_config_defaults() -> None:
     assert cfg.general.start_at_login is False
     assert cfg.activation.global_shortcut == "Ctrl+Space"
     assert cfg.activation.shortcut_behavior == "show-and-record"
+    assert cfg.voice.input_device == ""
+    assert cfg.voice.auto_finish_enabled is True
+    assert cfg.voice.silence_timeout_ms == 2000
+    assert cfg.voice.min_recording_ms == 700
+    assert cfg.voice.max_recording_ms == 60000
+    assert cfg.voice.voice_activity_threshold == 0.025
     assert cfg.onboarding.completed is False
-    assert cfg.conversation.enabled is True
-    assert cfg.conversation.max_messages == 10
+    assert cfg.conversation.enabled is False
+    assert cfg.conversation.max_turns == 8
+    assert cfg.conversation.max_messages == 16
     assert cfg.context.clipboard_enabled is True
     assert cfg.context.clipboard_auto_detect is True
     assert cfg.context.max_clipboard_chars == 8000
     assert cfg.context.active_window_enabled is True
     assert cfg.context.selected_text_enabled is False
+    assert cfg.context.screen_context_enabled is True
+    assert cfg.history.enabled is True
+    assert cfg.history.persist is False
+    assert cfg.notifications.enabled is True
+    assert cfg.model_profiles.active == "fast"
+    assert cfg.model_profiles.profiles["vision"].supports_vision is True
     assert cfg.quick_actions.enabled is True
     assert cfg.commands.show_risk_level is True
 
@@ -44,6 +66,130 @@ def test_prompt_context_labels_and_truncates_clipboard() -> None:
     assert "[clipboard truncated]" in formatted
     assert "Active window context:" in formatted
     assert "Ghostty" in formatted
+
+
+def test_audio_level_normalization_uses_recording_threshold() -> None:
+    assert _normalize_audio_level(0.0009, 0.003) == 0.0
+    assert _normalize_audio_level(0.003, 0.003) == 0.0
+    assert 0.0 < _normalize_audio_level(0.006, 0.003) < 1.0
+    assert _normalize_audio_level(0.1, 0.003) == 1.0
+
+
+def test_ocr_language_mapping() -> None:
+    assert _ocr_language("pt") == "por"
+    assert _ocr_language("pt-BR") == "por"
+    assert _ocr_language("es") == "spa"
+    assert _ocr_language("en") == "eng"
+
+
+@pytest.mark.asyncio
+async def test_model_profiles_event_and_switch(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = AppConfig()
+    monkeypatch.setattr("vox2ai.desktop_server.save_config", lambda _cfg: None)
+    controller = DesktopController(cfg)
+    events: list[Any] = []
+    controller.set_broadcast(events.append, asyncio.get_running_loop())
+
+    await controller.handle_command('{"type": "get_model_profiles"}')
+    await asyncio.sleep(0)
+    profiles = events[-1]
+    assert profiles.type == "model_profiles"
+    assert profiles.active == "fast"
+    assert any(p["id"] == "vision" and p["supports_vision"] for p in profiles.profiles)
+
+    await controller.handle_command('{"type": "set_model_profile", "profile": "smart"}')
+    await asyncio.sleep(0)
+    assert cfg.model_profiles.active == "smart"
+    assert any(event.type == "model_profile_set" and event.active == "smart" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_voice_activity_auto_stops_after_speech_and_silence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = AppConfig()
+    cfg.voice.auto_finish_enabled = True
+    cfg.voice.silence_timeout_ms = 200
+    cfg.voice.min_recording_ms = 100
+    cfg.voice.voice_activity_threshold = 0.02
+    controller = DesktopController(cfg)
+    events: list[Any] = []
+    stops: list[tuple[str, int]] = []
+    controller.set_broadcast(events.append, asyncio.get_running_loop())
+    controller._state = ServerState.LISTENING
+    controller._operation_generation = 4
+    controller._recording_started_at = time.monotonic() - 1.0
+
+    async def fake_finish_recording(
+        _self: DesktopController,
+        reason: str,
+        generation: int,
+    ) -> None:
+        stops.append((reason, generation))
+
+    monkeypatch.setattr(DesktopController, "_finish_recording", fake_finish_recording)
+
+    controller._handle_recording_audio_level(AudioLevel(rms=0.05, peak=0.08), 4)
+    controller._last_voice_at = time.monotonic() - 0.25
+    controller._handle_recording_audio_level(AudioLevel(rms=0.001, peak=0.002), 4)
+    await asyncio.sleep(0.05)
+
+    assert any(event.type == "voice_activity" for event in events)
+    auto_event = next(event for event in events if event.type == "recording_auto_stopping")
+    assert auto_event.reason == "silence"
+    assert stops == [("auto_silence", 4)]
+
+
+@pytest.mark.asyncio
+async def test_voice_activity_waits_for_speech_before_auto_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = AppConfig()
+    cfg.voice.auto_finish_enabled = True
+    cfg.voice.silence_timeout_ms = 100
+    cfg.voice.min_recording_ms = 100
+    cfg.voice.speech_start_required = True
+    cfg.voice.voice_activity_threshold = 0.02
+    controller = DesktopController(cfg)
+    events: list[Any] = []
+    stops: list[tuple[str, int]] = []
+    controller.set_broadcast(events.append, asyncio.get_running_loop())
+    controller._state = ServerState.LISTENING
+    controller._operation_generation = 5
+    controller._recording_started_at = time.monotonic() - 1.0
+
+    async def fake_finish_recording(
+        _self: DesktopController,
+        reason: str,
+        generation: int,
+    ) -> None:
+        stops.append((reason, generation))
+
+    monkeypatch.setattr(DesktopController, "_finish_recording", fake_finish_recording)
+
+    controller._handle_recording_audio_level(AudioLevel(rms=0.001, peak=0.002), 5)
+    await asyncio.sleep(0.05)
+
+    assert not any(event.type == "recording_auto_stopping" for event in events)
+    assert stops == []
+
+
+def test_config_file_api_key_counts_as_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    set_secret_store(FallbackStore())
+    try:
+        monkeypatch.delenv("VOX2AI_TEST_CONFIG_ONLY_KEY", raising=False)
+        cfg = AppConfig()
+        cfg.assistant.api_key_env = "VOX2AI_TEST_CONFIG_ONLY_KEY"
+        cfg.assistant.api_key = "sk-config-secret"
+
+        sanitized = sanitize_config(cfg)
+
+        assert api_key_configured(cfg) is True
+        assert sanitized["assistant"]["api_key_configured"] is True
+        assert sanitized["assistant"]["api_key_preview"] == "sk-c…cret"
+        assert "sk-config-secret" not in str(sanitized)
+    finally:
+        set_secret_store(FallbackStore())
 
 
 def test_command_risk_classifier() -> None:
@@ -77,6 +223,7 @@ async def test_conversation_context_is_bounded_and_clearable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = AppConfig()
+    cfg.conversation.enabled = True
     cfg.conversation.max_messages = 2
     controller = DesktopController(cfg)
     events: list[Any] = []

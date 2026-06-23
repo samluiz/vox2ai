@@ -143,6 +143,7 @@ class Vox2aiApp(App[None]):
                 self._stop_recording,
                 min_duration_seconds=self._config.voice.min_duration_seconds,
                 min_rms=self._config.voice.min_rms,
+                input_device=self._config.voice.input_device,
             )
             audio_path = recorded.path
             self._is_recording = False

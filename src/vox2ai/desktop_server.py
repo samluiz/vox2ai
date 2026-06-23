@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import copy
 import logging
 import os
+import shutil
+import subprocess
+import tempfile
+import time
+import uuid
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
@@ -17,14 +24,17 @@ from vox2ai.commands import (
     requires_approval,
     run_command,
 )
-from vox2ai.config import AppConfig, load_config, save_config
+from vox2ai.config import AppConfig, AssistantConfig, load_config, save_config
+from vox2ai.credentials import resolve_api_key
 from vox2ai.desktop_protocol import (
     AnswerDeltaEvent,
     AnswerDoneEvent,
     AnswerStartEvent,
+    AskAboutScreenCommand,
     AudioLevelEvent,
     BackendEvent,
     BackendStatusEvent,
+    CaptureScreenContextCommand,
     CommandApprovalEvent,
     CommandResultEvent,
     CommandRunningEvent,
@@ -32,22 +42,38 @@ from vox2ai.desktop_protocol import (
     ConversationClearedEvent,
     DiagnosticsEvent,
     ErrorEvent,
+    ExplainCommandCommand,
     HelloEvent,
     ListProviderModelsCommand,
+    ModelProfileSetEvent,
+    ModelProfilesEvent,
     OperationCancelledEvent,
     PartialTranscriptEvent,
     ProviderModelsErrorEvent,
     ProviderModelsEvent,
     ProviderTestResultEvent,
+    RecordingAutoStoppingEvent,
+    RecordingStoppedEvent,
+    RequestCommandApprovalCommand,
+    ScreenCaptureDoneEvent,
+    ScreenCaptureStartedEvent,
+    ScreenContextErrorEvent,
+    ScreenContextReadyEvent,
+    ScreenContextStartedEvent,
+    ScreenOcrDoneEvent,
+    SetConversationModeCommand,
+    SetModelProfileCommand,
     SettingsErrorEvent,
     SettingsEvent,
     SettingsSavedEvent,
     StateEvent,
+    SubmitScreenQuestionCommand,
     SubmitTextPromptCommand,
     TestProviderCommand,
     TimingEvent,
     TranscriptEvent,
     UpdateSettingsCommand,
+    VoiceActivityEvent,
     parse_command,
     serialize_event,
 )
@@ -103,13 +129,23 @@ class DesktopController:
         self._broadcast: Callable[[BackendEvent], None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._timer = Timer()
-        self._llm_client = LLMClient(config.assistant)
         self._partial_task: asyncio.Task[object] | None = None
         self._partial_transcriber: LocalPartialTranscriber | None = None
         self._recording_generation = 0
         self._operation_generation = 0
         self._last_cmd: object | None = None
         self._conversation: list[dict[str, str]] = []
+        self._recording_started_at: float = 0.0
+        self._speech_started = False
+        self._voice_active = False
+        self._last_voice_at: float | None = None
+        self._last_voice_activity_emit_at: float = 0.0
+        self._auto_stop_requested = False
+        self._last_voice_activity: dict[str, Any] = {"state": "unknown"}
+        self._conversation_mode = config.conversation.enabled
+        self._screen_contexts: dict[str, dict[str, Any]] = {}
+        self._last_screen_error: str | None = None
+        self._llm_client = LLMClient(self._active_assistant_config())
 
     def set_broadcast(
         self, fn: Callable[[BackendEvent], None], loop: asyncio.AbstractEventLoop
@@ -128,21 +164,28 @@ class DesktopController:
         self._send(PartialTranscriptEvent(text=text, stable=False))
 
     def _append_conversation(self, role: str, content: str) -> None:
-        if not self._config.conversation.enabled:
+        if not self._conversation_mode:
             return
         text = content.strip()
         if not text:
             return
         self._conversation.append({"role": role, "content": text})
-        max_messages = self._config.conversation.max_messages
+        max_messages = min(
+            self._config.conversation.max_messages,
+            self._config.conversation.max_turns * 2,
+        )
         if len(self._conversation) > max_messages:
             self._conversation = self._conversation[-max_messages:]
 
     def _build_prompt(self, user_text: str, context: dict[str, Any] | None = None) -> str:
         parts: list[str] = []
-        if self._config.conversation.enabled and self._conversation:
+        if self._conversation_mode and self._conversation:
             lines = ["Recent conversation in this app session:"]
-            for item in self._conversation[-self._config.conversation.max_messages :]:
+            max_messages = min(
+                self._config.conversation.max_messages,
+                self._config.conversation.max_turns * 2,
+            )
+            for item in self._conversation[-max_messages:]:
                 role = "User" if item.get("role") == "user" else "Assistant"
                 lines.append(f"{role}: {item.get('content', '')}")
             parts.append("\n".join(lines))
@@ -157,6 +200,64 @@ class DesktopController:
         parts.append(f"User request:\n{user_text}")
         return "\n\n".join(parts)
 
+    def _active_assistant_config(self) -> AssistantConfig:
+        profile = self._config.model_profiles.profiles.get(self._config.model_profiles.active)
+        if profile is None:
+            return self._config.assistant
+
+        assistant = copy.deepcopy(self._config.assistant)
+        if profile.provider:
+            assistant.provider = profile.provider
+        if profile.base_url:
+            assistant.base_url = profile.base_url
+        if profile.api_key_env:
+            assistant.api_key_env = profile.api_key_env
+        if profile.model:
+            assistant.model = profile.model
+        return assistant
+
+    def _client_for_profile(self, profile_id: str | None = None) -> LLMClient:
+        if profile_id is None or profile_id == self._config.model_profiles.active:
+            return self._llm_client
+
+        original = self._config.model_profiles.active
+        self._config.model_profiles.active = profile_id
+        try:
+            return LLMClient(self._active_assistant_config())
+        finally:
+            self._config.model_profiles.active = original
+
+    def _active_profile_supports_vision(self) -> bool:
+        profile = self._config.model_profiles.profiles.get(self._config.model_profiles.active)
+        return bool(profile and profile.supports_vision)
+
+    def _vision_profile_id(self) -> str | None:
+        if self._active_profile_supports_vision():
+            return self._config.model_profiles.active
+        for pid, profile in self._config.model_profiles.profiles.items():
+            if profile.supports_vision:
+                return pid
+        return None
+
+    def _model_profiles_payload(self) -> ModelProfilesEvent:
+        profiles = []
+        for pid, profile in self._config.model_profiles.profiles.items():
+            profiles.append(
+                {
+                    "id": pid,
+                    "label": profile.label or pid.title(),
+                    "provider": profile.provider or self._config.assistant.provider,
+                    "model": profile.model or self._config.assistant.model,
+                    "supports_vision": profile.supports_vision,
+                }
+            )
+        return ModelProfilesEvent(profiles=profiles, active=self._config.model_profiles.active)
+
+    def _screen_capture_method_label(self) -> str:
+        if shutil.which("gnome-screenshot"):
+            return "gnome-screenshot"
+        return self._config.context.screen_capture_method
+
     def _build_diagnostics(self) -> dict[str, Any]:
         from vox2ai.config import config_path
 
@@ -164,6 +265,18 @@ class DesktopController:
         cfg_path = config_path()
         log_dir = _get_log_dir()
         provider_configured = api_key_configured(self._config)
+        api_key_env_val = self._config.assistant.api_key_env
+        api_key_from_config = bool(self._config.assistant.api_key.strip())
+        api_key_from_env = bool(os.environ.get(api_key_env_val, ""))
+        api_key_from_secret = bool(get_secret_store().get("api_key"))
+        if api_key_from_secret:
+            api_key_source = "keyring"
+        elif api_key_from_env:
+            api_key_source = "env"
+        elif api_key_from_config:
+            api_key_source = "config"
+        else:
+            api_key_source = "unknown"
         return {
             "backend": {"status": "running"},
             "websocket": {"status": "connected"},
@@ -172,9 +285,18 @@ class DesktopController:
                 "provider": self._config.assistant.provider,
                 "model": self._config.assistant.model,
                 "base_url": self._config.assistant.base_url,
-                "api_key": "configured" if provider_configured else "missing",
+                "api_key_env": api_key_env_val,
+                "api_key_present": provider_configured,
+                "api_key_source": api_key_source,
+                "active_profile": self._config.model_profiles.active,
+                "model_profiles_enabled": True,
             },
-            "microphone": {"available": mic_available, "message": mic_message},
+            "microphone": {
+                "available": mic_available,
+                "message": mic_message,
+                "input_device": self._config.voice.input_device or "default",
+                "sample_rate": self._config.voice.sample_rate,
+            },
             "shortcut": {
                 "status": "configured",
                 "shortcut": self._config.recording.shortcut,
@@ -194,10 +316,39 @@ class DesktopController:
                 "mode": self._config.transcription.mode,
                 "model": self._config.voice.whisper_model,
                 "language": self._config.voice.primary_language,
+                "auto_finish_enabled": self._config.voice.auto_finish_enabled,
+                "silence_timeout_ms": self._config.voice.silence_timeout_ms,
+                "voice_activity_threshold": self._config.voice.voice_activity_threshold,
+                "last_voice_activity": self._last_voice_activity,
             },
             "conversation": {
-                "enabled": self._config.conversation.enabled,
+                "enabled": self._conversation_mode,
                 "messages": len(self._conversation),
+                "max_turns": self._config.conversation.max_turns,
+            },
+            "history": {
+                "enabled": self._config.history.enabled,
+                "persist": self._config.history.persist,
+                "count": 0,
+            },
+            "model_profiles": {
+                "active": self._config.model_profiles.active,
+                "available": list(self._config.model_profiles.profiles.keys()),
+                "vision_profiles": [
+                    pid
+                    for pid, profile in self._config.model_profiles.profiles.items()
+                    if profile.supports_vision
+                ],
+            },
+            "screen_context": {
+                "enabled": self._config.context.screen_context_enabled,
+                "capture_method": self._screen_capture_method_label(),
+                "capture_available": _screen_capture_available(),
+                "vision_available": self._active_profile_supports_vision()
+                or self._vision_profile_id() is not None,
+                "ocr_available": _ocr_available(),
+                "ocr_engine": "tesseract" if _ocr_available() else "",
+                "last_error": self._last_screen_error,
             },
             "paths": {
                 "logs": str(log_dir),
@@ -265,6 +416,8 @@ class DesktopController:
                 audio, sample_rate = self._recorder.snapshot_audio()
                 if audio.shape[0] == 0:
                     continue
+                if _audio_rms(audio) < self._config.voice.min_rms:
+                    continue
                 scheduled = transcriber.maybe_transcribe(audio, sample_rate)
                 if scheduled:
                     self._timer.start("partial_stt")
@@ -309,6 +462,14 @@ class DesktopController:
             "get_diagnostics": self._handle_get_diagnostics,
             "clear_conversation": self._handle_clear_conversation,
             "get_context_preview": self._handle_get_context_preview,
+            "set_conversation_mode": self._handle_set_conversation_mode,
+            "get_model_profiles": self._handle_get_model_profiles,
+            "set_model_profile": self._handle_set_model_profile,
+            "request_command_approval": self._handle_request_command_approval,
+            "explain_command": self._handle_explain_command,
+            "capture_screen_context": self._handle_capture_screen_context,
+            "submit_screen_question": self._handle_submit_screen_question,
+            "ask_about_screen": self._handle_ask_about_screen,
             "test_provider": self._handle_test_provider,
             "list_provider_models": self._handle_list_provider_models,
             "delete_api_key": self._handle_delete_api_key,
@@ -337,9 +498,17 @@ class DesktopController:
             return
 
         self._operation_generation += 1
+        generation = self._operation_generation
         self._stop_partial_loop()
         self._timer.reset()
         self._timer.start("record")
+        self._recording_started_at = time.monotonic()
+        self._speech_started = False
+        self._voice_active = False
+        self._last_voice_at = None
+        self._last_voice_activity_emit_at = 0.0
+        self._auto_stop_requested = False
+        self._last_voice_activity = {"state": "waiting"}
         self._state = ServerState.LISTENING
         self._send_state("listening", "Listening...")
         # Clear any previous partial transcript from the UI.
@@ -350,22 +519,109 @@ class DesktopController:
                 sample_rate=self._config.voice.sample_rate,
                 min_duration_seconds=self._config.voice.min_duration_seconds,
                 min_rms=self._config.voice.min_rms,
-                on_audio_level=lambda level: self._send(
-                    AudioLevelEvent(rms=level.rms, peak=level.peak)
-                ),
+                input_device=self._config.voice.input_device,
+                on_audio_level=lambda level: self._handle_recording_audio_level(level, generation),
             )
             self._recorder.start()
             self._start_partial_loop()
         except AudioError as e:
             self._stop_partial_loop()
-            self._error_out(str(e))
+            self._send(ErrorEvent(
+                message=f"audio_input_unavailable: Could not open microphone input: {e}",
+            ))
+            self._error_out(f"Microphone could not be opened: {e}")
+
+    def _handle_recording_audio_level(self, level: Any, generation: int) -> None:
+        if generation != self._operation_generation or self._state != ServerState.LISTENING:
+            return
+
+        now = time.monotonic()
+        threshold = self._voice_activity_threshold()
+        normalized = _normalize_audio_level(level.rms, threshold)
+        self._send(AudioLevelEvent(rms=level.rms, peak=level.peak, level=normalized))
+
+        duration_ms = int(max(0.0, now - self._recording_started_at) * 1000)
+        is_voice = level.rms >= threshold
+        silence_ms = 0
+
+        if is_voice:
+            self._speech_started = True
+            self._voice_active = True
+            self._last_voice_at = now
+            self._last_voice_activity = {"state": "active", "rms": level.rms}
+        else:
+            self._voice_active = False
+            if self._speech_started and self._last_voice_at is not None:
+                silence_ms = int(max(0.0, now - self._last_voice_at) * 1000)
+                self._last_voice_activity = {
+                    "state": "silent",
+                    "rms": level.rms,
+                    "silence_ms": silence_ms,
+                }
+            else:
+                self._last_voice_activity = {"state": "waiting", "rms": level.rms}
+
+        if now - self._last_voice_activity_emit_at >= 0.15:
+            self._last_voice_activity_emit_at = now
+            self._send(
+                VoiceActivityEvent(
+                    active=is_voice,
+                    rms=level.rms,
+                    peak=level.peak,
+                    speech_started=self._speech_started,
+                    silence_ms=silence_ms,
+                )
+            )
+
+        if self._auto_stop_requested:
+            return
+
+        if duration_ms >= self._config.voice.max_recording_ms:
+            self._schedule_auto_stop(generation, "max_duration", silence_ms)
+            return
+
+        if not self._config.voice.auto_finish_enabled:
+            return
+        if duration_ms < self._config.voice.min_recording_ms:
+            return
+        if self._config.voice.speech_start_required and not self._speech_started:
+            return
+        if self._speech_started and silence_ms >= self._config.voice.silence_timeout_ms:
+            self._schedule_auto_stop(generation, "silence", silence_ms)
+
+    def _voice_activity_threshold(self) -> float:
+        configured = self._config.voice.voice_activity_threshold
+        if configured > 0:
+            return configured
+        return max(self._config.voice.min_rms, 0.001)
+
+    def _schedule_auto_stop(self, generation: int, reason: str, silence_ms: int) -> None:
+        if self._auto_stop_requested:
+            return
+        self._auto_stop_requested = True
+        self._send(RecordingAutoStoppingEvent(reason=reason, silence_ms=silence_ms))
+        if self._loop is None:
+            return
+        self._loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(
+                self._finish_recording(
+                    reason="auto_silence" if reason == "silence" else reason,
+                    generation=generation,
+                )
+            )
+        )
 
     async def _handle_stop_recording(self) -> None:
+        await self._finish_recording(reason="manual", generation=self._operation_generation)
+
+    async def _finish_recording(self, reason: str, generation: int) -> None:
+        if generation != self._operation_generation:
+            return
         if self._state != ServerState.LISTENING or self._recorder is None:
             return
 
-        generation = self._operation_generation
         self._state = ServerState.TRANSCRIBING
+        self._send(RecordingStoppedEvent(reason=reason))
         self._send_state("transcribing", "Transcribing...")
         self._stop_partial_loop()
 
@@ -448,6 +704,10 @@ class DesktopController:
         self._timer.reset()
         generation = self._operation_generation + 1
         self._operation_generation = generation
+        if cmd.conversation_mode is not None:
+            self._conversation_mode = cmd.conversation_mode
+        if not self._conversation_mode:
+            self._conversation.clear()
         self._state = ServerState.THINKING
         self._send(TranscriptEvent(text=text, raw_text=None, source="text"))
         self._send_state("thinking", "Thinking...")
@@ -466,6 +726,231 @@ class DesktopController:
         self._conversation.clear()
         self._send(ConversationClearedEvent())
         self._send_state("ready", "Conversation cleared.")
+
+    async def _handle_set_conversation_mode(self) -> None:
+        cmd = self._last_cmd
+        if not isinstance(cmd, SetConversationModeCommand):
+            return
+        self._conversation_mode = bool(cmd.enabled)
+        self._config.conversation.enabled = self._conversation_mode
+        if not self._conversation_mode:
+            self._conversation.clear()
+        self._send(SettingsSavedEvent(settings=sanitize_config(self._config)))
+
+    async def _handle_get_model_profiles(self) -> None:
+        self._send(self._model_profiles_payload())
+
+    async def _handle_set_model_profile(self) -> None:
+        cmd = self._last_cmd
+        if not isinstance(cmd, SetModelProfileCommand):
+            return
+        profile = cmd.profile.strip()
+        if profile not in self._config.model_profiles.profiles:
+            self._send(
+                SettingsErrorEvent(
+                    field="model_profile",
+                    message=f"Unknown profile: {profile}",
+                )
+            )
+            return
+        self._config.model_profiles.active = profile
+        self._llm_client = LLMClient(self._active_assistant_config())
+        save_config(self._config)
+        self._send(ModelProfileSetEvent(active=profile))
+        self._send(self._model_profiles_payload())
+
+    async def _handle_request_command_approval(self) -> None:
+        cmd = self._last_cmd
+        if not isinstance(cmd, RequestCommandApprovalCommand):
+            return
+        command = cmd.command.strip()
+        if not command:
+            return
+        decision = AgentDecision(
+            type="command",
+            message="Requested from a command block.",
+            command=command,
+            reason=cmd.reason or "Run command proposed in the answer.",
+        )
+        self._operation_generation += 1
+        await self._handle_decision(decision, self._operation_generation)
+
+    async def _handle_explain_command(self) -> None:
+        cmd = self._last_cmd
+        if not isinstance(cmd, ExplainCommandCommand):
+            return
+        command = cmd.command.strip()
+        if not command:
+            return
+        self._operation_generation += 1
+        generation = self._operation_generation
+        self._state = ServerState.THINKING
+        self._send_state("thinking", "Thinking...")
+        prompt = (
+            "Explain this shell command in plain language. Include what it changes, "
+            "whether it is risky, and what to check before running it.\n\n"
+            f"Command:\n{command}"
+        )
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            _do_plain_completion,
+            self._llm_client,
+            "You are vox2ai, a careful Linux assistant.",
+            prompt,
+        )
+        if generation != self._operation_generation:
+            return
+        if isinstance(result, Vox2AIError):
+            self._error_out(str(result))
+            return
+        self._state = ServerState.STREAMING_ANSWER
+        self._send(AnswerStartEvent())
+        await self._stream_text(result, generation)
+
+    async def _handle_capture_screen_context(self) -> None:
+        cmd = self._last_cmd
+        if not isinstance(cmd, CaptureScreenContextCommand):
+            return
+        await self._capture_screen_context(cmd.mode)
+
+    async def _handle_submit_screen_question(self) -> None:
+        cmd = self._last_cmd
+        if not isinstance(cmd, SubmitScreenQuestionCommand):
+            return
+        await self._submit_screen_question(cmd.question, cmd.context_id)
+
+    async def _handle_ask_about_screen(self) -> None:
+        cmd = self._last_cmd
+        if not isinstance(cmd, AskAboutScreenCommand):
+            return
+        context_id = await self._capture_screen_context(cmd.mode)
+        if context_id and cmd.question.strip():
+            await self._submit_screen_question(cmd.question, context_id)
+
+    async def _capture_screen_context(self, mode: str = "auto") -> str | None:
+        if not self._config.context.screen_context_enabled:
+            message = "Ask about screen is disabled in Settings."
+            self._last_screen_error = message
+            self._send(ScreenContextErrorEvent(message=message))
+            return None
+
+        self._send(ScreenCaptureStartedEvent())
+        loop = asyncio.get_running_loop()
+        captured = await loop.run_in_executor(None, _capture_screen, self._config)
+        if isinstance(captured, Vox2AIError):
+            self._last_screen_error = str(captured)
+            self._send(ScreenContextErrorEvent(message=str(captured)))
+            return None
+
+        context_id = uuid.uuid4().hex
+        vision_profile = self._vision_profile_id()
+        use_vision = mode == "vision" or (mode == "auto" and vision_profile is not None)
+        context: dict[str, Any] = {
+            "id": context_id,
+            "mode": "vision" if use_vision else "ocr",
+            "image_path": str(captured["image_path"]),
+            "mime_type": captured["mime_type"],
+            "width": captured["width"],
+            "height": captured["height"],
+            "vision_profile": vision_profile if use_vision else None,
+            "ocr_text": "",
+            "ocr_engine": "",
+        }
+        self._screen_contexts[context_id] = context
+        self._send(
+            ScreenCaptureDoneEvent(
+                context_id=context_id,
+                width=int(captured["width"]),
+                height=int(captured["height"]),
+            )
+        )
+
+        if use_vision:
+            self._send(ScreenContextStartedEvent(mode="vision"))
+            self._send(ScreenContextReadyEvent(context_id=context_id, mode="vision"))
+            return context_id
+
+        self._send(ScreenContextStartedEvent(mode="ocr"))
+        ocr = await loop.run_in_executor(
+            None,
+            _ocr_screen,
+            Path(context["image_path"]),
+            self._config,
+        )
+        if isinstance(ocr, Vox2AIError):
+            self._last_screen_error = str(ocr)
+            self._cleanup_screen_context(context_id)
+            self._send(ScreenContextErrorEvent(message=str(ocr)))
+            return None
+
+        context["ocr_text"] = ocr["text"]
+        context["ocr_engine"] = ocr["engine"]
+        self._send(
+            ScreenOcrDoneEvent(
+                engine=ocr["engine"],
+                text_length=len(ocr["text"]),
+                confidence=float(ocr.get("confidence", 0.0)),
+            )
+        )
+        if not self._config.context.screen_capture_save_debug:
+            _unlink_silent(Path(context["image_path"]))
+            context["image_path"] = ""
+        self._send(ScreenContextReadyEvent(context_id=context_id, mode="ocr"))
+        return context_id
+
+    async def _submit_screen_question(self, question: str, context_id: str) -> None:
+        clean = question.strip()
+        context = self._screen_contexts.get(context_id)
+        if not clean or context is None:
+            self._send(ScreenContextErrorEvent(message="Screen context is no longer available."))
+            return
+
+        self._operation_generation += 1
+        generation = self._operation_generation
+        self._state = ServerState.THINKING
+        self._send(TranscriptEvent(text=clean, raw_text=None, source="screen"))
+        self._send_state("thinking", "Thinking...")
+        self._send(AnswerStartEvent())
+
+        loop = asyncio.get_running_loop()
+        try:
+            if context.get("mode") == "vision":
+                image_path = Path(str(context.get("image_path", "")))
+                result = await loop.run_in_executor(
+                    None,
+                    _do_vision_screen_answer,
+                    self._client_for_profile(str(context.get("vision_profile") or "")),
+                    clean,
+                    image_path,
+                    str(context.get("mime_type") or "image/png"),
+                )
+            else:
+                result = await loop.run_in_executor(
+                    None,
+                    _do_ocr_screen_answer,
+                    self._llm_client,
+                    clean,
+                    str(context.get("ocr_text") or ""),
+                )
+        finally:
+            if not self._config.context.screen_capture_save_debug:
+                self._cleanup_screen_context(context_id)
+
+        if generation != self._operation_generation:
+            return
+        if isinstance(result, Vox2AIError):
+            self._error_out(str(result))
+            return
+        await self._stream_text(result, generation)
+
+    def _cleanup_screen_context(self, context_id: str) -> None:
+        context = self._screen_contexts.pop(context_id, None)
+        if not context:
+            return
+        image_path = str(context.get("image_path") or "")
+        if image_path and not self._config.context.screen_capture_save_debug:
+            _unlink_silent(Path(image_path))
 
     async def _handle_get_context_preview(self) -> None:
         self._send(
@@ -487,8 +972,10 @@ class DesktopController:
             save_config(updated)
             self._config = updated
             # Recreate LLM client if provider settings changed.
-            if "assistant" in patch:
-                self._llm_client = LLMClient(updated.assistant)
+            if "assistant" in patch or "model_profiles" in patch:
+                self._llm_client = LLMClient(self._active_assistant_config())
+            if "conversation" in patch:
+                self._conversation_mode = updated.conversation.enabled
             sanitized = sanitize_config(updated)
             sanitized["needs_setup"] = needs_setup(updated)
             self._send(SettingsSavedEvent(settings=sanitized))
@@ -501,8 +988,7 @@ class DesktopController:
         if not isinstance(cmd, TestProviderCommand):
             return
         # Use the configured API key if none provided in the test request.
-        env_key = os.environ.get(self._config.assistant.api_key_env, "")
-        api_key = cmd.api_key or get_secret_store().get("api_key") or env_key
+        api_key = resolve_api_key(self._config.assistant, cmd.api_key)
         try:
             pid = cmd.provider_id or self._config.assistant.provider
             burl = cmd.base_url or self._config.assistant.base_url
@@ -518,8 +1004,7 @@ class DesktopController:
         cmd = self._last_cmd
         if not isinstance(cmd, ListProviderModelsCommand):
             return
-        env_key = os.environ.get(self._config.assistant.api_key_env, "")
-        api_key = cmd.api_key or get_secret_store().get("api_key") or env_key
+        api_key = resolve_api_key(self._config.assistant, cmd.api_key)
         try:
             adapter = create_adapter(cmd.provider_id, cmd.base_url, api_key, "")
             models, error = adapter.list_models()
@@ -534,6 +1019,9 @@ class DesktopController:
         """Delete the stored API key."""
         try:
             get_secret_store().delete("api_key")
+            if self._config.assistant.api_key:
+                self._config.assistant.api_key = ""
+                save_config(self._config)
             self._send(SettingsSavedEvent(settings=sanitize_config(self._config)))
         except Exception as exc:
             self._send(SettingsErrorEvent(message=str(exc)))
@@ -768,7 +1256,12 @@ def _check_microphone_available() -> tuple[bool, str]:
         inputs = [d for d in devices if isinstance(d, dict) and d.get("max_input_channels", 0) > 0]
         if not inputs:
             return False, "No input devices found."
-        return True, f"{len(inputs)} input device(s) available."
+        default_dev = sd.default.device[0]
+        default_name = "unknown"
+        for d in inputs:
+            if d.get("index") == default_dev or d.get("name", ""):
+                default_name = str(d.get("name", d.get("hostapi", "unknown")))
+        return True, f"{len(inputs)} input device(s) available. Default: {default_name}"
     except Exception as exc:
         return False, str(exc)
 
@@ -793,6 +1286,23 @@ def _do_stop_recording(recorder: StreamingRecorder) -> Path | Vox2AIError:
         return r.path
     except Vox2AIError as e:
         return e
+
+
+def _normalize_audio_level(rms: float, min_rms: float) -> float:
+    gate = max(min_rms, 0.001)
+    if rms <= gate:
+        return 0.0
+    scale = max(min_rms * 6.0, 0.006)
+    return max(0.0, min(1.0, (rms - gate) / scale))
+
+
+def _audio_rms(audio: Any) -> float:
+    try:
+        import numpy as np
+
+        return float(np.sqrt(np.mean(audio**2)))
+    except Exception:
+        return 0.0
 
 
 def _do_transcription(path: Path, config: AppConfig) -> str | Vox2AIError:
@@ -821,6 +1331,56 @@ def _do_decision(llm: LLMClient, transcript: str) -> AgentDecision | Vox2AIError
         return e
 
 
+def _do_plain_completion(llm: LLMClient, system_prompt: str, prompt: str) -> str | Vox2AIError:
+    try:
+        return llm.complete(system_prompt, prompt)
+    except Vox2AIError as e:
+        return e
+
+
+def _do_vision_screen_answer(
+    llm: LLMClient,
+    question: str,
+    image_path: Path,
+    mime_type: str,
+) -> str | Vox2AIError:
+    try:
+        prompt = (
+            "The user explicitly captured their screen and asked about it.\n\n"
+            f"User question:\n{question}\n\n"
+            "Answer based on the screenshot. Be direct, and call out uncertainty when needed."
+        )
+        return llm.complete_with_image(
+            "You are vox2ai, a concise GNOME desktop assistant.",
+            prompt,
+            image_path,
+            mime_type,
+        )
+    except Vox2AIError as e:
+        return e
+
+
+def _do_ocr_screen_answer(llm: LLMClient, question: str, ocr_text: str) -> str | Vox2AIError:
+    if not ocr_text.strip():
+        return Vox2AIError(
+            "I captured the screen but could not extract readable text. "
+            "Configure a vision-capable model or install OCR support."
+        )
+    try:
+        prompt = (
+            "The user asked about their screen.\n\n"
+            "OCR-extracted text from screenshot:\n"
+            "---\n"
+            f"{ocr_text.strip()}\n"
+            "---\n\n"
+            f"User question:\n{question}\n\n"
+            "Answer based on the visible text. If OCR may be incomplete, say what is uncertain."
+        )
+        return llm.complete("You are vox2ai, a concise GNOME desktop assistant.", prompt)
+    except Vox2AIError as e:
+        return e
+
+
 def _do_run_command(command: str, config: AppConfig) -> CommandResult | Vox2AIError:
     try:
         return run_command(
@@ -831,6 +1391,112 @@ def _do_run_command(command: str, config: AppConfig) -> CommandResult | Vox2AIEr
         )
     except Vox2AIError as e:
         return e
+
+
+def _screen_capture_available() -> bool:
+    return shutil.which("gnome-screenshot") is not None
+
+
+def _ocr_available() -> bool:
+    return shutil.which("tesseract") is not None
+
+
+def _capture_screen(config: AppConfig) -> dict[str, Any] | Vox2AIError:
+    if not _screen_capture_available():
+        return Vox2AIError(
+            "Screen capture is unavailable. Install gnome-screenshot or configure a portal "
+            "capture method."
+        )
+
+    cache_dir = Path(tempfile.gettempdir()) / "vox2ai-screen"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    image_path = cache_dir / f"screen-{uuid.uuid4().hex}.png"
+
+    method = config.context.screen_capture_method
+    if method not in {"auto", "gnome-screenshot"}:
+        return Vox2AIError("Configured screen capture method is not available yet.")
+
+    try:
+        subprocess.run(
+            ["gnome-screenshot", "-f", str(image_path)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.CalledProcessError as exc:
+        return Vox2AIError((exc.stderr or "Screen capture failed.").strip())
+    except subprocess.TimeoutExpired:
+        return Vox2AIError("Screen capture timed out.")
+    except OSError as exc:
+        return Vox2AIError(f"Screen capture failed: {exc}")
+
+    width, height = _png_dimensions(image_path)
+    return {
+        "image_path": image_path,
+        "mime_type": "image/png",
+        "width": width,
+        "height": height,
+    }
+
+
+def _ocr_screen(image_path: Path, config: AppConfig) -> dict[str, Any] | Vox2AIError:
+    if not _ocr_available():
+        return Vox2AIError(
+            "OCR is unavailable. Install tesseract or configure a vision-capable model."
+        )
+    lang = _ocr_language(config.voice.primary_language)
+    try:
+        proc = subprocess.run(
+            ["tesseract", str(image_path), "stdout", "-l", lang],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return Vox2AIError("OCR timed out.")
+    except OSError as exc:
+        return Vox2AIError(f"OCR failed: {exc}")
+
+    if proc.returncode != 0:
+        detail = (proc.stderr or "OCR failed.").strip()
+        return Vox2AIError(detail)
+
+    return {
+        "text": proc.stdout.strip(),
+        "confidence": 0.0,
+        "engine": "tesseract",
+        "language": lang,
+        "blocks": [],
+    }
+
+
+def _ocr_language(primary_language: str) -> str:
+    lang = primary_language.lower().strip()
+    if lang.startswith("pt"):
+        return "por"
+    if lang.startswith("es"):
+        return "spa"
+    return "eng"
+
+
+def _png_dimensions(path: Path) -> tuple[int, int]:
+    try:
+        data = path.read_bytes()[:24]
+        if data[:8] != b"\x89PNG\r\n\x1a\n":
+            return 0, 0
+        width = int.from_bytes(data[16:20], "big")
+        height = int.from_bytes(data[20:24], "big")
+        return width, height
+    except Exception:
+        return 0, 0
+
+
+def _unlink_silent(path: Path) -> None:
+    with contextlib.suppress(Exception):
+        path.unlink(missing_ok=True)
 
 
 def _do_command_explanation(
@@ -957,9 +1623,9 @@ def run_server(
     async def _run() -> None:
         cfg = config or load_config()
         if host is not None:
-            cfg.desktop.host = host
+            cfg.backend_service.host = host
         if port is not None:
-            cfg.desktop.port = port
+            cfg.backend_service.port = port
         server = DesktopServer(cfg)
         await server.start()
         await asyncio.Future()  # run forever
@@ -1030,15 +1696,48 @@ def _apply_settings_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig
             if hasattr(updated.onboarding, k):
                 setattr(updated.onboarding, k, v)
 
+    if "context" in patch:
+        for k, v in patch["context"].items():
+            if hasattr(updated.context, k):
+                setattr(updated.context, k, v)
+
     if "conversation" in patch:
         for k, v in patch["conversation"].items():
             if hasattr(updated.conversation, k):
                 setattr(updated.conversation, k, v)
 
-    if "context" in patch:
-        for k, v in patch["context"].items():
-            if hasattr(updated.context, k):
-                setattr(updated.context, k, v)
+    if "history" in patch:
+        for k, v in patch["history"].items():
+            if hasattr(updated.history, k):
+                setattr(updated.history, k, v)
+
+    if "notifications" in patch:
+        for k, v in patch["notifications"].items():
+            if hasattr(updated.notifications, k):
+                setattr(updated.notifications, k, v)
+
+    if "terminal" in patch:
+        for k, v in patch["terminal"].items():
+            if hasattr(updated.terminal, k):
+                setattr(updated.terminal, k, v)
+
+    if "model_profiles" in patch:
+        mp = patch["model_profiles"]
+        if isinstance(mp, dict):
+            active = mp.get("active")
+            if isinstance(active, str):
+                updated.model_profiles.active = active
+            profiles = mp.get("profiles")
+            if isinstance(profiles, dict):
+                for pid, profile_patch in profiles.items():
+                    if pid not in updated.model_profiles.profiles or not isinstance(
+                        profile_patch, dict
+                    ):
+                        continue
+                    profile = updated.model_profiles.profiles[pid]
+                    for k, v in profile_patch.items():
+                        if hasattr(profile, k):
+                            setattr(profile, k, v)
 
     if "quick_actions" in patch:
         for k, v in patch["quick_actions"].items():
@@ -1061,6 +1760,3 @@ def _apply_settings_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig
                 setattr(updated.debug, k, v)
 
     return AppConfig.model_validate(updated.model_dump())
-
-
-

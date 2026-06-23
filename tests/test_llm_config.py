@@ -46,6 +46,30 @@ def test_config_defaults_used() -> None:
     assert config.provider == "openai-compatible"
     assert config.base_url == "https://api.openai.com/v1"
     assert config.api_key_env == "OPENAI_API_KEY"
+    assert config.api_key == ""
     assert config.model == "gpt-4.1-mini"
     assert config.temperature == 0.2
     assert config.timeout_seconds == 60
+
+
+def test_config_file_api_key_is_used(monkeypatch: pytest.MonkeyPatch) -> None:
+    created: dict[str, object] = {}
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs: object) -> None:
+            created.update(kwargs)
+
+    monkeypatch.delenv("VOX2AI_TEST_CONFIG_KEY", raising=False)
+    monkeypatch.setattr("vox2ai.llm.OpenAI", FakeOpenAI)
+
+    config = AssistantConfig(
+        api_key_env="VOX2AI_TEST_CONFIG_KEY",
+        api_key="sk-config-file",
+        base_url="https://api.openai.com/v1",
+        model="gpt-4.1-mini",
+    )
+    client = LLMClient(config)
+
+    client._get_client()
+
+    assert created["api_key"] == "sk-config-file"

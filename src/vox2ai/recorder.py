@@ -9,6 +9,7 @@ import sounddevice as sd
 import soundfile as sf
 
 from vox2ai.audio import RecordedAudio, _compute_rms
+from vox2ai.audio_input import start_input_stream
 from vox2ai.errors import AudioError
 
 
@@ -31,10 +32,12 @@ class HoldToRecordSession:
         sample_rate: int,
         min_duration_seconds: float,
         min_rms: float,
+        input_device: str = "",
     ) -> None:
         self._sample_rate = sample_rate
         self._min_duration = min_duration_seconds
         self._min_rms = min_rms
+        self._input_device = input_device
         self._frames: list[np.ndarray] = []
         self._stream: sd.InputStream | None = None
         self._lock = threading.Lock()
@@ -58,13 +61,13 @@ class HoldToRecordSession:
                 self._frames.append(indata.copy())
 
             try:
-                self._stream = sd.InputStream(
-                    samplerate=self._sample_rate,
+                self._stream = start_input_stream(
+                    sample_rate=self._sample_rate,
                     channels=1,
                     dtype="float32",
                     callback=callback,
+                    device=self._input_device,
                 )
-                self._stream.start()
             except sd.PortAudioError as e:
                 self._stream = None
                 raise AudioError(f"Could not open audio input stream: {e}") from e
@@ -88,7 +91,10 @@ class HoldToRecordSession:
         if duration < self._min_duration:
             raise AudioError(f"Recording too short ({duration:.2f}s < {self._min_duration}s).")
         if rms < self._min_rms:
-            raise AudioError(f"Audio too quiet (RMS {rms:.5f} < {self._min_rms}).")
+            raise AudioError(
+                f"Audio too quiet (RMS {rms:.5f} < {self._min_rms}). "
+                "Speak louder, choose another input device in Preferences, or lower voice.min_rms."
+            )
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             tmp_path = Path(f.name)
@@ -130,9 +136,10 @@ class StreamingRecorder(HoldToRecordSession):
         sample_rate: int,
         min_duration_seconds: float,
         min_rms: float,
+        input_device: str = "",
         on_audio_level: Callable[[AudioLevel], None] | None = None,
     ) -> None:
-        super().__init__(sample_rate, min_duration_seconds, min_rms)
+        super().__init__(sample_rate, min_duration_seconds, min_rms, input_device)
         self._on_audio_level = on_audio_level
         self._level_frames: list[np.ndarray] = []
 
@@ -144,13 +151,13 @@ class StreamingRecorder(HoldToRecordSession):
             self._level_frames.clear()
 
             try:
-                self._stream = sd.InputStream(
-                    samplerate=self._sample_rate,
+                self._stream = start_input_stream(
+                    sample_rate=self._sample_rate,
                     channels=1,
                     dtype="float32",
                     callback=self.callback,
+                    device=self._input_device,
                 )
-                self._stream.start()
             except sd.PortAudioError as e:
                 self._stream = None
                 raise AudioError(f"Could not open audio input stream: {e}") from e
