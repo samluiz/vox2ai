@@ -1,0 +1,228 @@
+# vox2ai example configuration
+#
+# vox2ai currently reads TOML from:
+#   ~/.config/vox2ai/config.toml
+#
+# This YAML file is documentation-oriented: it shows every active config key,
+# the default shape, and common allowed values. Use it as a reference when
+# editing config.toml.
+
+assistant:
+  # provider: openai-compatible
+  provider: openai-compatible
+  base_url: https://api.openai.com/v1
+  api_key_env: OPENAI_API_KEY
+  # api_key may be set in config, but env/keyring is preferred.
+  api_key: ""
+  model: gpt-4.1-mini
+  # temperature: 0.0-2.0
+  temperature: 0.2
+  timeout_seconds: 60
+
+voice:
+  # language: auto or a Whisper language code such as en, pt, pt-BR, es
+  language: auto
+  # language_mode: auto | force | constrained-auto
+  language_mode: auto
+  primary_language: en
+  allowed_languages: []
+  min_language_probability: 0.55
+  # stt_backend: faster-whisper
+  stt_backend: faster-whisper
+  # whisper_model examples: tiny | base | small | medium | large-v3
+  whisper_model: small
+  sample_rate: 16000
+  # input_device: empty for automatic, or a device id/name from `vox2ai audio-devices`
+  input_device: ""
+  min_duration_seconds: 0.7
+  min_rms: 0.003
+  auto_finish_enabled: true
+  silence_timeout_ms: 2000
+  speech_start_required: true
+  min_recording_ms: 700
+  max_recording_ms: 60000
+  # Absolute RMS threshold. Negative values are allowed as a sensitivity offset
+  # below min_rms; for example -0.002 with min_rms 0.003 gives a ~0.001 threshold.
+  voice_activity_threshold: 0.025
+  initial_prompt_enabled: true
+
+activation:
+  # GNOME extension uses the GNOME keybinding, normally Ctrl+Space.
+  mode: push-to-talk
+  # backend: window | evdev. GNOME extension normally does not need evdev.
+  backend: window
+  key: KEY_RIGHTCTRL
+  fallback_key: KEY_RIGHTCTRL
+  global_shortcut: Ctrl+Space
+  # shortcut_behavior: show-widget | show-and-focus-input | show-and-record | toggle-widget
+  shortcut_behavior: show-and-record
+
+recording:
+  # activation_mode: hold-to-talk | toggle-to-talk
+  activation_mode: hold-to-talk
+  # shortcut examples: Ctrl | Alt+Space | Ctrl+Space | Ctrl+Shift+Space | Super+Space | F8
+  shortcut: Ctrl
+
+transcription:
+  # mode: final | local-partial
+  mode: local-partial
+  show_partial: true
+  refine: true
+  # refine_mode: auto
+  refine_mode: auto
+  show_raw: false
+  refiner_model: ""
+  custom_vocabulary: []
+  custom_replacements: {}
+
+  context:
+    enabled: true
+    include_current_working_directory: true
+    include_git_repository_name: true
+    include_project_files: true
+    include_dependency_names: true
+    include_shell_commands: true
+    max_terms: 80
+
+  partial:
+    enabled: true
+    interval_ms: 1600
+    min_audio_seconds: 1.2
+    window_seconds: 6.0
+    max_partial_chars: 220
+    emit_only_on_change: true
+    # stability_strategy: replace
+    stability_strategy: replace
+    refine: false
+
+commands:
+  # mode: disabled | ask-before-run | allow-all
+  mode: ask-before-run
+  timeout_seconds: 30
+  max_output_chars: 12000
+  working_directory: "."
+  show_risk_level: true
+  blocked_patterns:
+    - "rm "
+    - "rm -"
+    - "sudo "
+    - shutdown
+    - reboot
+    - mkfs
+    - "dd "
+    - "chmod "
+    - "chown "
+    - git reset
+    - git clean
+    - docker system prune
+    - docker compose down -v
+
+performance:
+  preload_whisper: true
+  warmup_llm: false
+  max_workers: 2
+
+tui:
+  # theme: dark | light
+  theme: dark
+
+tts:
+  # TTS is currently out of scope for the GNOME assistant.
+  enabled: false
+  backend: none
+  voice: ""
+
+general:
+  # Legacy desktop keys may exist for old frontends; GNOME uses systemd service + extension.
+  minimize_to_tray: true
+  start_hidden: true
+  start_at_login: false
+  launch_at_login: false
+
+onboarding:
+  completed: false
+
+conversation:
+  enabled: false
+  # max_messages should usually be max_turns * 2.
+  max_messages: 16
+  max_turns: 8
+
+context:
+  clipboard_enabled: true
+  clipboard_auto_detect: true
+  max_clipboard_chars: 8000
+  active_window_enabled: true
+  selected_text_enabled: false
+  screen_context_enabled: true
+  # screen_capture_method: auto | gnome-screenshot | portal
+  # auto prefers GNOME Shell capture from the extension, with backend fallback.
+  screen_capture_method: auto
+  screen_capture_save_debug: false
+
+history:
+  enabled: true
+  persist: false
+  max_items: 10
+
+notifications:
+  enabled: true
+  notify_answer_ready: true
+  notify_command_complete: true
+  notify_errors: true
+
+terminal:
+  # GNOME popup does not expose run-in-terminal in the simplified product path.
+  command: gnome-terminal
+  # run_mode: copy-only | prefill
+  run_mode: copy-only
+
+model_profiles:
+  active: fast
+  profiles:
+    fast:
+      label: Fast
+      provider: openai-compatible
+      base_url: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
+      model: gpt-4.1-mini
+      supports_vision: false
+    smart:
+      label: Smart
+      provider: openai-compatible
+      base_url: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
+      model: gpt-4.1
+      supports_vision: false
+    vision:
+      label: Vision
+      provider: openai-compatible
+      base_url: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
+      model: gpt-4.1-mini
+      supports_vision: true
+    local:
+      label: Local
+      provider: openai-compatible
+      base_url: http://localhost:11434/v1
+      api_key_env: OLLAMA_API_KEY
+      model: llama3.2
+      supports_vision: false
+
+quick_actions:
+  # Quick actions are not exposed in the simplified GNOME popup.
+  enabled: true
+
+backend_service:
+  host: 127.0.0.1
+  port: 8765
+  auto_start: true
+
+gnome:
+  show_panel_indicator: true
+  compact_density: true
+
+debug:
+  enabled: false
+  show_timings: false
+  log_file: ""

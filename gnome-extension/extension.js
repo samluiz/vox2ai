@@ -42,6 +42,7 @@ export default class Vox2aiExtension extends Extension {
         this._indicator = null;
         this._registeredKeybindings = new Set();
         this._settingSignalIds = [];
+        this._controllerUpdate = null;
     }
 
     enable() {
@@ -73,6 +74,8 @@ export default class Vox2aiExtension extends Extension {
             },
         );
         this._controller = new Controller(this._settings, this._soundFeedback, this._notifications);
+        this._controllerUpdate = () => this._syncAskScreenKeybinding();
+        this._controller.onUpdate(this._controllerUpdate);
 
         // Panel indicator
         try {
@@ -104,6 +107,7 @@ export default class Vox2aiExtension extends Extension {
         } catch (e) {
             log(`[vox2ai] keybinding error: ${e}`);
         }
+        this._syncAskScreenKeybinding();
 
         // Settings listeners — guarded by schema key check
         const shortcutId = connectSetting(this._settings, 'shortcut-behavior', () => {
@@ -121,10 +125,14 @@ export default class Vox2aiExtension extends Extension {
             'min-recording-ms',
             'max-recording-ms',
             'voice-activity-threshold',
+            'conversation-mode',
+            'screen-context-enabled',
+            'ask-screen-shortcut-enabled',
         ]) {
             const id = connectSetting(this._settings, key, () => {
                 if (this._controller)
                     this._controller.syncRuntimeSettings();
+                this._syncAskScreenKeybinding();
             });
             if (id !== null)
                 this._settingSignalIds.push(id);
@@ -146,6 +154,10 @@ export default class Vox2aiExtension extends Extension {
         }
 
         if (this._controller) {
+            if (this._controllerUpdate) {
+                try { this._controller.offUpdate(this._controllerUpdate); } catch (e) {}
+                this._controllerUpdate = null;
+            }
             try { this._controller.destroy(); } catch (e) { log(`[vox2ai] controller destroy error: ${e}`); }
             this._controller = null;
         }
@@ -200,6 +212,27 @@ export default class Vox2aiExtension extends Extension {
             }
         }
         this._registeredKeybindings.clear();
+    }
+
+    _syncAskScreenKeybinding() {
+        if (!this._settings || !this._controller)
+            return;
+        const enabled = safeGet(this._settings, 'get_boolean', 'ask-screen-shortcut-enabled', false);
+        const shouldRegister = enabled && this._controller.canAskAboutScreen();
+        const name = 'ask-screen-shortcut';
+        if (shouldRegister && !this._registeredKeybindings.has(name)) {
+            this._registerKeybinding(name, () => {
+                this._openPopup();
+                this._controller.askAboutScreen();
+            });
+        } else if (!shouldRegister && this._registeredKeybindings.has(name)) {
+            try {
+                Main.wm.removeKeybinding(name);
+            } catch (error) {
+                logError(error, `[vox2ai] failed to remove keybinding ${name}`);
+            }
+            this._registeredKeybindings.delete(name);
+        }
     }
 
     _openPrefs() {

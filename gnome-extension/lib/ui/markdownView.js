@@ -72,7 +72,6 @@ export function renderMarkdown(parent, markdown, options = {}) {
     const onCopy = options.onCopy || (() => {});
     const onExplainCommand = options.onExplainCommand || (() => {});
     const onRunCommand = options.onRunCommand || (() => {});
-    const onRunCommandInTerminal = options.onRunCommandInTerminal || (() => {});
     let blocks;
     try {
         blocks = parseMarkdown(markdown);
@@ -95,8 +94,7 @@ export function renderMarkdown(parent, markdown, options = {}) {
                     block.code,
                     onCopy,
                     onExplainCommand,
-                    onRunCommand,
-                    onRunCommandInTerminal
+                    onRunCommand
                 ));
             } else if (block.type === 'list') {
                 parent.add_child(renderList(block));
@@ -107,8 +105,7 @@ export function renderMarkdown(parent, markdown, options = {}) {
                         block.text,
                         onCopy,
                         onExplainCommand,
-                        onRunCommand,
-                        onRunCommandInTerminal
+                        onRunCommand
                     ));
                 else
                     parent.add_child(markupLabel(inlineToMarkup(block.text), 'vox2ai-markdown-paragraph'));
@@ -125,8 +122,7 @@ export function renderCodeBlock(
     code,
     onCopy,
     onExplainCommand = () => {},
-    onRunCommand = () => {},
-    onRunCommandInTerminal = () => {}
+    onRunCommand = () => {}
 ) {
     const card = vbox(6, 'vox2ai-code-block');
     const header = hbox(8, 'vox2ai-code-header');
@@ -151,7 +147,6 @@ export function renderCodeBlock(
         const actions = hbox(6, 'vox2ai-command-card-actions');
         actions.add_child(button('Explain', () => onExplainCommand(String(code || '')), 'Explaining'));
         actions.add_child(button('Run', () => onRunCommand(String(code || '')), 'Approval'));
-        actions.add_child(button('Terminal', () => onRunCommandInTerminal(String(code || '')), 'Copied'));
         card.add_child(actions);
     }
     return card;

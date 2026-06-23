@@ -66,11 +66,11 @@ def tui() -> None:
 def server(host: str | None, port: int | None) -> None:
     """Start the WebSocket backend server for the GNOME Shell extension."""
     import sys
+
     from vox2ai.config import config_path
 
     print(
-        f"[vox2ai] version=dev executable={sys.argv[0]} "
-        f"config_path={config_path()}",
+        f"[vox2ai] version=dev executable={sys.argv[0]} config_path={config_path()}",
         flush=True,
     )
     from vox2ai.desktop_server import run_server

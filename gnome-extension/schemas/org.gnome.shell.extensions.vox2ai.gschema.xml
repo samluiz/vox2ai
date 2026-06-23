@@ -42,7 +42,7 @@
     </key>
 
     <key name="screen-context-enabled" type="b">
-      <default>false</default>
+      <default>true</default>
       <summary>Ask about screen enabled</summary>
       <description>Allow explicit screenshot capture for screen questions.</description>
     </key>
@@ -111,7 +111,7 @@
       <default>0.025</default>
       <summary>Voice activity threshold</summary>
       <description>RMS threshold used to decide whether speech is active.</description>
-      <range min="0.0001" max="0.2"/>
+      <range min="-0.2" max="0.2"/>
     </key>
     <key name="sound-feedback-enabled" type="b">
       <default>true</default>

@@ -1,4 +1,5 @@
 import GLib from 'gi://GLib';
+import Shell from 'gi://Shell';
 import St from 'gi://St';
 import {State} from './state.js';
 import {Connection} from './connection.js';
@@ -15,6 +16,18 @@ function safeGet(settings, method, key, fallback) {
     }
 }
 
+function screenCaptureMethod(settings) {
+    const value = safeGet(settings, 'get_string', 'screen-capture-method', 'auto');
+    if (['auto', 'gnome-screenshot', 'portal'].includes(value))
+        return value;
+    try {
+        settings.set_string('screen-capture-method', 'auto');
+    } catch (e) {
+        log(`[vox2ai] could not reset screen capture method: ${e}`);
+    }
+    return 'auto';
+}
+
 export const Controller = class Controller {
     constructor(settings, soundFeedback = null, notifications = null) {
         this._settings = settings;
@@ -27,6 +40,7 @@ export const Controller = class Controller {
         this._copyFeedbackTimer = null;
         this._lastAnswerNotified = '';
         this._lastCommandNotified = '';
+        this._screenCaptureSeq = 0;
 
         this._state = {
             status: State.DISCONNECTED,
@@ -56,11 +70,10 @@ export const Controller = class Controller {
             lastBackendError: null,
             settings: null,
             diagnostics: null,
+            capabilities: null,
             copyFeedback: '',
             conversationMode: safeGet(settings, 'get_boolean', 'conversation-mode', false),
-            modelProfiles: [],
-            activeModelProfile: 'fast',
-            history: [],
+            conversationTurnCount: 0,
             screenContext: {
                 id: null,
                 mode: null,
@@ -162,9 +175,9 @@ export const Controller = class Controller {
                     max_messages: safeGet(this._settings, 'get_int', 'conversation-max-turns', 8) * 2,
                 },
                 context: {
-                    screen_context_enabled: false,
-                    screen_capture_method: 'disabled',
-                    screen_capture_save_debug: false,
+                    screen_context_enabled: safeGet(this._settings, 'get_boolean', 'screen-context-enabled', false),
+                    screen_capture_method: screenCaptureMethod(this._settings),
+                    screen_capture_save_debug: safeGet(this._settings, 'get_boolean', 'screen-capture-save-debug', false),
                 },
             },
         });
@@ -328,6 +341,10 @@ export const Controller = class Controller {
         const clean = (text || '').trim();
         if (!clean)
             return;
+        if (this._state.status === State.SCREEN_READY) {
+            this.submitScreenQuestion(clean);
+            return;
+        }
         this._submitText(clean);
     }
 
@@ -350,8 +367,156 @@ export const Controller = class Controller {
             error: null,
         });
 
-        if (this._send({type: 'submit_text_prompt', text: clean}))
+        if (this._send({
+            type: 'submit_text_prompt',
+            text: clean,
+            conversation_mode: !!this._state.conversationMode,
+        }))
             this._setStatus(State.THINKING);
+    }
+
+    async askAboutScreen() {
+        if (!this.canAskAboutScreen())
+            return;
+
+        const ok = await this.ensureBackendRunning();
+        if (!ok)
+            return;
+
+        this._clearSession(false);
+        this._setState({
+            status: State.SCREEN_CAPTURING,
+            screenContext: {
+                id: null,
+                mode: null,
+                status: 'capturing',
+                error: null,
+            },
+        });
+        const captured = await this._captureScreenWithShell();
+        if (captured) {
+            this._send({
+                type: 'capture_screen_context',
+                mode: 'auto',
+                image_path: captured.path,
+                mime_type: 'image/png',
+                width: 0,
+                height: 0,
+                method: 'gnome-shell',
+            });
+        } else {
+            this._send({type: 'capture_screen_context', mode: 'auto'});
+        }
+    }
+
+    submitScreenQuestion(question) {
+        const clean = (question || '').trim();
+        const contextId = this._state.screenContext?.id;
+        if (!clean || !contextId)
+            return;
+
+        this._setState({
+            status: State.SCREEN_ANSWERING,
+            userText: clean,
+            transcript: clean,
+            answer: '',
+            answerStreaming: true,
+        });
+        this._send({
+            type: 'submit_screen_question',
+            context_id: contextId,
+            question: clean,
+        });
+    }
+
+    canAskAboutScreen() {
+        if (!safeGet(this._settings, 'get_boolean', 'screen-context-enabled', false))
+            return false;
+        const caps = this._state.capabilities?.capabilities || {};
+        const screen = caps.screen_capture;
+        const vision = caps.vision;
+        const ocr = caps.ocr;
+        return !!(screen?.available && (vision?.available || ocr?.available));
+    }
+
+    async _captureScreenWithShell() {
+        if (!Shell.Screenshot)
+            return null;
+
+        const dir = GLib.build_filenamev([GLib.get_tmp_dir(), 'vox2ai-screen']);
+        try {
+            GLib.mkdir_with_parents(dir, 0o700);
+        } catch (e) {
+            log(`[vox2ai] could not create screenshot directory: ${e}`);
+            return null;
+        }
+
+        this._screenCaptureSeq += 1;
+        const path = GLib.build_filenamev([
+            dir,
+            `screen-${GLib.get_real_time()}-${this._screenCaptureSeq}.png`,
+        ]);
+
+        return new Promise(resolve => {
+            let done = false;
+            const finish = result => {
+                if (done)
+                    return;
+                done = true;
+                if (timer)
+                    GLib.source_remove(timer);
+                resolve(result);
+            };
+
+            const timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 4000, () => {
+                log('[vox2ai] GNOME Shell screenshot timed out; falling back to backend capture');
+                finish(null);
+                return GLib.SOURCE_REMOVE;
+            });
+
+            try {
+                const screenshot = new Shell.Screenshot();
+                screenshot.screenshot(false, path, (...args) => {
+                    try {
+                        let success = false;
+                        if (typeof screenshot.screenshot_finish === 'function') {
+                            const asyncResult = args.length > 1 ? args[1] : args[0];
+                            const finishResult = screenshot.screenshot_finish(asyncResult);
+                            if (Array.isArray(finishResult))
+                                success = !!finishResult[0];
+                            else
+                                success = !!finishResult;
+                        } else {
+                            success = args.some(arg => arg === true);
+                        }
+                        finish(success ? {path} : null);
+                    } catch (e) {
+                        log(`[vox2ai] GNOME Shell screenshot finish error: ${e}`);
+                        finish(null);
+                    }
+                });
+            } catch (e) {
+                log(`[vox2ai] GNOME Shell screenshot error: ${e}`);
+                finish(null);
+            }
+        });
+    }
+
+    toggleConversationMode() {
+        const enabled = !this._state.conversationMode;
+        this._setState({conversationMode: enabled});
+        try {
+            this._settings.set_boolean('conversation-mode', enabled);
+        } catch (e) {
+            log(`[vox2ai] conversation setting error: ${e}`);
+        }
+        this._send({type: 'set_conversation_mode', enabled});
+        this.syncRuntimeSettings();
+    }
+
+    clearConversation() {
+        this._send({type: 'clear_conversation'});
+        this._setState({conversationTurnCount: 0});
     }
 
     requestCommandRun(command) {
@@ -469,6 +634,8 @@ export const Controller = class Controller {
         if (s === 'connected') {
             this._setState({backendConnected: true, backendStarting: false});
             this._send({type: 'get_settings'});
+            this._send({type: 'get_capabilities'});
+            this._send({type: 'get_conversation_state'});
             this.syncRuntimeSettings();
             if (this._pendingRecordOnReady) {
                 this._pendingRecordOnReady = false;
@@ -534,21 +701,27 @@ export const Controller = class Controller {
                 break;
             case 'answer_start':
                 this._setState({
-                    status: State.ANSWERING,
+                    status: this._state.screenContext?.status === 'ready'
+                        ? State.SCREEN_ANSWERING
+                        : State.ANSWERING,
                     answer: '',
                     answerStreaming: true,
                 });
                 break;
             case 'answer_delta':
                 this._setState({
-                    status: State.ANSWERING,
+                    status: this._state.status === State.SCREEN_ANSWERING
+                        ? State.SCREEN_ANSWERING
+                        : State.ANSWERING,
                     answer: this._state.answer + (event.text || ''),
                     answerStreaming: true,
                 });
                 break;
             case 'answer_done':
                 this._setState({
-                    status: State.ANSWERING,
+                    status: this._state.status === State.SCREEN_ANSWERING
+                        ? State.SCREEN_ANSWERING
+                        : State.ANSWERING,
                     answerStreaming: false,
                 });
                 this._playSound('answer-done');
@@ -597,6 +770,8 @@ export const Controller = class Controller {
                 break;
             case 'hello':
                 this._send({type: 'get_settings'});
+                this._send({type: 'get_capabilities'});
+                this._send({type: 'get_conversation_state'});
                 if (!this._state.backendConnected) {
                     this._setState({
                         status: State.IDLE,
@@ -616,9 +791,14 @@ export const Controller = class Controller {
                     conversationMode: !!event.settings?.conversation?.enabled,
                 });
                 break;
-            case 'model_profiles':
+            case 'capabilities':
+                this._setState({capabilities: event});
                 break;
-            case 'model_profile_set':
+            case 'conversation_state':
+                this._setState({
+                    conversationMode: !!event.enabled,
+                    conversationTurnCount: event.turn_count || 0,
+                });
                 break;
             case 'conversation_cleared':
                 this._setState({
@@ -627,14 +807,70 @@ export const Controller = class Controller {
                     answer: '',
                     answerStreaming: false,
                     status: State.IDLE,
+                    conversationTurnCount: 0,
                 });
                 break;
             case 'screen_capture_started':
+                this._setState({
+                    status: State.SCREEN_CAPTURING,
+                    screenContext: {
+                        ...this._state.screenContext,
+                        status: 'capturing',
+                        error: null,
+                    },
+                });
+                break;
             case 'screen_capture_done':
+                this._setState({
+                    screenContext: {
+                        ...this._state.screenContext,
+                        id: event.context_id || null,
+                        status: 'captured',
+                    },
+                });
+                break;
             case 'screen_context_started':
+                this._setState({
+                    screenContext: {
+                        ...this._state.screenContext,
+                        mode: event.mode || null,
+                    },
+                });
+                break;
             case 'screen_ocr_done':
+                this._setState({
+                    screenContext: {
+                        ...this._state.screenContext,
+                        mode: 'ocr',
+                        ocrEngine: event.engine || 'tesseract',
+                        ocrTextLength: event.text_length || 0,
+                    },
+                });
+                break;
             case 'screen_context_ready':
+                this._setState({
+                    status: State.SCREEN_READY,
+                    screenContext: {
+                        ...this._state.screenContext,
+                        id: event.context_id || this._state.screenContext.id,
+                        mode: event.mode || this._state.screenContext.mode,
+                        status: 'ready',
+                        error: null,
+                    },
+                });
+                break;
             case 'screen_context_error':
+                this._setState({
+                    status: State.ERROR,
+                    error: event.message || 'Ask about screen is unavailable.',
+                    lastBackendError: event.message || 'Screen context error',
+                    screenContext: {
+                        ...this._state.screenContext,
+                        status: 'error',
+                        error: event.message || 'Screen context error',
+                    },
+                });
+                this._notifyError('Ask about screen', event.message || 'Screen context error');
                 break;
             case 'settings_error':
                 this._setState({
@@ -644,6 +880,11 @@ export const Controller = class Controller {
                 break;
             case 'diagnostics':
                 this._setState({diagnostics: event.diagnostics || null});
+                break;
+            case 'audio_input_test_started':
+            case 'audio_input_test_level':
+            case 'audio_input_test_stopped':
+            case 'audio_input_test_error':
                 break;
         }
     }
@@ -682,7 +923,8 @@ export const Controller = class Controller {
                 });
                 break;
             case 'ready':
-                if (this._state.status === State.ANSWERING && this._state.answer)
+                if ([State.ANSWERING, State.SCREEN_ANSWERING].includes(this._state.status) &&
+                    this._state.answer)
                     this._setState({answerStreaming: false});
                 else if (this._state.status === State.ERROR && this._state.error)
                     this._setState({backendConnected: true, backendStarting: false});
@@ -705,6 +947,7 @@ export const Controller = class Controller {
             audioPeak: peak,
             lastAudioLevelAt: GLib.get_monotonic_time(),
             audioEventsReceived: true,
+            voiceActive: !!event.speech_detected,
         });
     }
 
@@ -837,6 +1080,24 @@ export const Controller = class Controller {
                 this._soundFeedback.playError();
         } catch (e) {
             log(`[vox2ai] sound feedback error: ${e}`);
+        }
+    }
+
+    _notifyInfo(title, body = '') {
+        try {
+            if (this._notifications)
+                this._notifications.notifyInfo(title, body, null);
+        } catch (e) {
+            log(`[vox2ai] notification error: ${e}`);
+        }
+    }
+
+    _notifyError(title, body = '') {
+        try {
+            if (this._notifications)
+                this._notifications.notifyError(title, body);
+        } catch (e) {
+            log(`[vox2ai] notification error: ${e}`);
         }
     }
 

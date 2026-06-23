@@ -1,5 +1,6 @@
 import tomllib
 from pathlib import Path
+from typing import Any
 
 import tomli_w
 from platformdirs import user_config_dir
@@ -338,8 +339,8 @@ class VoiceConfig(BaseModel):
     @field_validator("voice_activity_threshold")
     @classmethod
     def validate_voice_activity_threshold(cls, v: float) -> float:
-        if v < 0:
-            raise ValueError("voice_activity_threshold must be non-negative")
+        if v < -0.2:
+            raise ValueError("voice_activity_threshold must be >= -0.2")
         return v
 
 
@@ -797,7 +798,7 @@ def _backup_config(path: Path) -> None:
     shutil.copy2(path, backup_path)
 
 
-def migrate_config_for_model_profiles(data: dict) -> dict:
+def migrate_config_for_model_profiles(data: dict[str, Any]) -> dict[str, Any]:
     """Ensure existing provider/api_key settings are preserved in model_profiles.
 
     If the user had an existing [assistant] config but no [model_profiles] section,

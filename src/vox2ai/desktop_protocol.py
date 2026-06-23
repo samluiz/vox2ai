@@ -34,6 +34,7 @@ class AudioLevelEvent:
     rms: float = 0.0
     peak: float = 0.0
     level: float = 0.0
+    speech_detected: bool = False
 
 
 @dataclass
@@ -180,6 +181,49 @@ class DiagnosticsEvent:
 
 
 @dataclass
+class CapabilitiesEvent:
+    type: Literal["capabilities"] = "capabilities"
+    capabilities: dict[str, Any] = field(default_factory=dict)
+    audio: dict[str, Any] = field(default_factory=dict)
+    assistant: dict[str, Any] = field(default_factory=dict)
+    conversation: dict[str, Any] = field(default_factory=dict)
+    screen: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ConversationStateEvent:
+    type: Literal["conversation_state"] = "conversation_state"
+    enabled: bool = False
+    turn_count: int = 0
+    max_turns: int = 8
+
+
+@dataclass
+class AudioInputTestStartedEvent:
+    type: Literal["audio_input_test_started"] = "audio_input_test_started"
+
+
+@dataclass
+class AudioInputTestLevelEvent:
+    type: Literal["audio_input_test_level"] = "audio_input_test_level"
+    rms: float = 0.0
+    peak: float = 0.0
+    speech_detected: bool = False
+    threshold: float = 0.0
+
+
+@dataclass
+class AudioInputTestStoppedEvent:
+    type: Literal["audio_input_test_stopped"] = "audio_input_test_stopped"
+
+
+@dataclass
+class AudioInputTestErrorEvent:
+    type: Literal["audio_input_test_error"] = "audio_input_test_error"
+    message: str = ""
+
+
+@dataclass
 class ContextPreviewEvent:
     type: Literal["context_preview"] = "context_preview"
     clipboard_available: bool = False
@@ -271,6 +315,12 @@ BackendEvent = (
     | ProviderModelsEvent
     | ProviderModelsErrorEvent
     | DiagnosticsEvent
+    | CapabilitiesEvent
+    | ConversationStateEvent
+    | AudioInputTestStartedEvent
+    | AudioInputTestLevelEvent
+    | AudioInputTestStoppedEvent
+    | AudioInputTestErrorEvent
     | ContextPreviewEvent
     | ConversationClearedEvent
     | ModelProfilesEvent
@@ -399,8 +449,18 @@ class GetDiagnosticsCommand:
 
 
 @dataclass
+class GetCapabilitiesCommand:
+    type: Literal["get_capabilities"] = "get_capabilities"
+
+
+@dataclass
 class ClearConversationCommand:
     type: Literal["clear_conversation"] = "clear_conversation"
+
+
+@dataclass
+class GetConversationStateCommand:
+    type: Literal["get_conversation_state"] = "get_conversation_state"
 
 
 @dataclass
@@ -412,6 +472,22 @@ class GetContextPreviewCommand:
 class SetConversationModeCommand:
     type: Literal["set_conversation_mode"] = "set_conversation_mode"
     enabled: bool = False
+
+
+@dataclass
+class StartAudioInputTestCommand:
+    type: Literal["start_audio_input_test"] = "start_audio_input_test"
+
+
+@dataclass
+class StopAudioInputTestCommand:
+    type: Literal["stop_audio_input_test"] = "stop_audio_input_test"
+
+
+@dataclass
+class UpdateVoiceSettingsCommand:
+    type: Literal["update_voice_settings"] = "update_voice_settings"
+    settings: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -442,6 +518,11 @@ class ExplainCommandCommand:
 class CaptureScreenContextCommand:
     type: Literal["capture_screen_context"] = "capture_screen_context"
     mode: str = "auto"
+    image_path: str = ""
+    mime_type: str = "image/png"
+    width: int = 0
+    height: int = 0
+    method: str = ""
 
 
 @dataclass
@@ -476,9 +557,14 @@ FrontendCommand = (
     | OpenConfigFolderCommand
     | ResetSettingsCommand
     | GetDiagnosticsCommand
+    | GetCapabilitiesCommand
     | ClearConversationCommand
+    | GetConversationStateCommand
     | GetContextPreviewCommand
     | SetConversationModeCommand
+    | StartAudioInputTestCommand
+    | StopAudioInputTestCommand
+    | UpdateVoiceSettingsCommand
     | GetModelProfilesCommand
     | SetModelProfileCommand
     | RequestCommandApprovalCommand
@@ -524,9 +610,14 @@ def parse_command(raw: str) -> FrontendCommand | ErrorEvent:
         "open_config_folder": OpenConfigFolderCommand,
         "reset_settings": ResetSettingsCommand,
         "get_diagnostics": GetDiagnosticsCommand,
+        "get_capabilities": GetCapabilitiesCommand,
         "clear_conversation": ClearConversationCommand,
+        "get_conversation_state": GetConversationStateCommand,
         "get_context_preview": GetContextPreviewCommand,
         "set_conversation_mode": SetConversationModeCommand,
+        "start_audio_input_test": StartAudioInputTestCommand,
+        "stop_audio_input_test": StopAudioInputTestCommand,
+        "update_voice_settings": UpdateVoiceSettingsCommand,
         "get_model_profiles": GetModelProfilesCommand,
         "set_model_profile": SetModelProfileCommand,
         "request_command_approval": RequestCommandApprovalCommand,

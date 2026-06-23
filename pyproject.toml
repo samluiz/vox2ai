@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vox2ai"
 version = "0.1.0"
-description = "Desktop/terminal Linux voice assistant with push-to-talk, STT, LLM, and Tauri UI"
+description = "GNOME-native Linux voice/text AI assistant with STT, LLM, and local backend service"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}

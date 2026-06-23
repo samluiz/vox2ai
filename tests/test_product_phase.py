@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from vox2ai.agent import AgentDecision
+from vox2ai.capabilities import build_capabilities
 from vox2ai.commands import classify_command_risk, describe_command_effect
 from vox2ai.config import AppConfig
+from vox2ai.conversation import ConversationMemory
 from vox2ai.desktop_server import (
     DesktopController,
     ServerState,
@@ -16,7 +19,9 @@ from vox2ai.desktop_server import (
     _normalize_audio_level,
     _ocr_language,
 )
+from vox2ai.errors import Vox2AIError
 from vox2ai.recorder import AudioLevel
+from vox2ai.screen_context import CapturedScreen, OcrResult
 from vox2ai.secrets import FallbackStore, set_secret_store
 from vox2ai.settings import api_key_configured, sanitize_config
 
@@ -213,7 +218,7 @@ async def test_diagnostics_payload_sanitizes_secret() -> None:
         diagnostics = events[-1].diagnostics
         serialized = str(diagnostics)
         assert "sk-secret-value" not in serialized
-        assert diagnostics["provider"]["api_key"] == "configured"
+        assert diagnostics["provider"]["api_key_present"] is True
     finally:
         set_secret_store(FallbackStore())
 
@@ -255,14 +260,228 @@ async def test_conversation_context_is_bounded_and_clearable(
     )
     await asyncio.sleep(0)
 
-    assert len(controller._conversation) == 2
+    assert len(controller._conversation.turns) == 2
     assert "Recent conversation in this app session:" in captured_prompts[-1]
     assert "Clipboard context:" in captured_prompts[-1]
 
     await controller.handle_command('{"type": "clear_conversation"}')
     await asyncio.sleep(0)
-    assert controller._conversation == []
+    assert controller._conversation.turns == []
     assert any(event.type == "conversation_cleared" for event in events)
+
+
+def test_conversation_memory_prompt_and_clear() -> None:
+    memory = ConversationMemory(enabled=True, max_turns=1)
+    memory.append("user", "In this test, my project name is Banana.")
+    memory.append("assistant", "Got it.")
+    memory.append("user", "What is my project name?")
+    prompt = memory.prompt_context()
+    assert "What is my project name?" in prompt
+    assert "Banana" not in prompt
+    memory.clear()
+    assert memory.state()["turn_count"] == 0
+
+
+def test_capabilities_reflect_missing_ocr(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = AppConfig()
+
+    def fake_which(name: str) -> bool:
+        return name == "gnome-screenshot"
+
+    monkeypatch.setattr("vox2ai.screen_context._which", fake_which)
+    monkeypatch.setattr("vox2ai.capabilities.list_input_devices", lambda: [{"id": "0"}])
+    payload = build_capabilities(
+        cfg,
+        conversation={"enabled": False, "turn_count": 0, "max_turns": 8},
+    )
+    assert payload["capabilities"]["screen_capture"]["available"] is True
+    assert payload["capabilities"]["ocr"]["available"] is False
+
+
+def test_capabilities_reflect_missing_vision_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = AppConfig()
+    cfg.model_profiles.profiles["fast"].supports_vision = False
+    monkeypatch.setattr("vox2ai.screen_context._which", lambda _name: True)
+    monkeypatch.setattr("vox2ai.capabilities.list_input_devices", lambda: [{"id": "0"}])
+    payload = build_capabilities(
+        cfg,
+        conversation={"enabled": False, "turn_count": 0, "max_turns": 8},
+    )
+    assert payload["capabilities"]["vision"]["available"] is False
+    assert "not marked as vision-capable" in payload["capabilities"]["vision"]["reason"]
+
+
+def test_capabilities_reflect_audio_input_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = AppConfig()
+
+    def fail_devices() -> list[dict[str, object]]:
+        raise RuntimeError("no input")
+
+    monkeypatch.setattr("vox2ai.capabilities.list_input_devices", fail_devices)
+    payload = build_capabilities(
+        cfg,
+        conversation={"enabled": False, "turn_count": 0, "max_turns": 8},
+    )
+    assert payload["capabilities"]["voice_prompt"]["available"] is False
+    assert payload["audio"]["input_available"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_capabilities_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = AppConfig()
+    monkeypatch.setattr("vox2ai.capabilities.list_input_devices", lambda: [{"id": "0"}])
+    controller = DesktopController(cfg)
+    events: list[Any] = []
+    controller.set_broadcast(events.append, asyncio.get_running_loop())
+
+    await controller.handle_command('{"type": "get_capabilities"}')
+    await asyncio.sleep(0)
+
+    event = events[-1]
+    assert event.type == "capabilities"
+    assert event.capabilities["text_prompt"]["available"] is True
+
+
+@pytest.mark.asyncio
+async def test_conversation_state_event() -> None:
+    cfg = AppConfig()
+    controller = DesktopController(cfg)
+    events: list[Any] = []
+    controller.set_broadcast(events.append, asyncio.get_running_loop())
+
+    await controller.handle_command('{"type": "set_conversation_mode", "enabled": true}')
+    await asyncio.sleep(0)
+    state = next(event for event in events if event.type == "conversation_state")
+    assert state.enabled is True
+    assert state.turn_count == 0
+
+
+@pytest.mark.asyncio
+async def test_screen_flow_chooses_vision_when_active_model_supports_vision(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig()
+    cfg.model_profiles.profiles["fast"].supports_vision = True
+    image = tmp_path / "screen.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 16)
+    monkeypatch.setattr(
+        "vox2ai.desktop_server.capture_screen",
+        lambda _cfg: CapturedScreen(image, "image/png", 100, 80, "test"),
+    )
+    controller = DesktopController(cfg)
+    events: list[Any] = []
+    controller.set_broadcast(events.append, asyncio.get_running_loop())
+
+    context_id = await controller._capture_screen_context("auto")
+    await asyncio.sleep(0)
+
+    assert context_id is not None
+    assert controller._screen_contexts[context_id]["mode"] == "vision"
+    assert any(event.type == "screen_context_ready" and event.mode == "vision" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_screen_flow_chooses_ocr_when_vision_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig()
+    cfg.model_profiles.profiles["fast"].supports_vision = False
+    image = tmp_path / "screen.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 16)
+    monkeypatch.setattr(
+        "vox2ai.desktop_server.capture_screen",
+        lambda _cfg: CapturedScreen(image, "image/png", 100, 80, "test"),
+    )
+    monkeypatch.setattr(
+        "vox2ai.desktop_server.ocr_screen",
+        lambda _path, _cfg: OcrResult("visible text", 0.0, "tesseract", "eng"),
+    )
+    controller = DesktopController(cfg)
+    events: list[Any] = []
+    controller.set_broadcast(events.append, asyncio.get_running_loop())
+
+    context_id = await controller._capture_screen_context("auto")
+    await asyncio.sleep(0)
+
+    assert context_id is not None
+    assert controller._screen_contexts[context_id]["mode"] == "ocr"
+    assert any(event.type == "screen_ocr_done" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_screen_flow_accepts_frontend_captured_tmp_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig()
+    cfg.model_profiles.profiles["fast"].supports_vision = False
+    image = tmp_path / "frontend-screen.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 16)
+    monkeypatch.setattr(
+        "vox2ai.desktop_server.ocr_screen",
+        lambda _path, _cfg: OcrResult("visible text", 0.0, "tesseract", "eng"),
+    )
+    controller = DesktopController(cfg)
+    events: list[Any] = []
+    controller.set_broadcast(events.append, asyncio.get_running_loop())
+
+    await controller.handle_command(
+        '{"type": "capture_screen_context", "mode": "auto", '
+        f'"image_path": "{image}", "method": "gnome-shell"}}'
+    )
+    await asyncio.sleep(0)
+
+    assert any(event.type == "screen_context_ready" and event.mode == "ocr" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_screen_flow_errors_when_neither_vision_nor_ocr_available(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig()
+    cfg.model_profiles.profiles["fast"].supports_vision = False
+    image = tmp_path / "screen.png"
+    image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 16)
+    monkeypatch.setattr(
+        "vox2ai.desktop_server.capture_screen",
+        lambda _cfg: CapturedScreen(image, "image/png", 100, 80, "test"),
+    )
+    monkeypatch.setattr(
+        "vox2ai.desktop_server.ocr_screen",
+        lambda _path, _cfg: Vox2AIError("OCR is unavailable. Install tesseract."),
+    )
+    controller = DesktopController(cfg)
+    events: list[Any] = []
+    controller.set_broadcast(events.append, asyncio.get_running_loop())
+
+    context_id = await controller._capture_screen_context("auto")
+    await asyncio.sleep(0)
+
+    assert context_id is None
+    error = next(event for event in events if event.type == "screen_context_error")
+    assert "OCR is unavailable" in error.message
+
+
+@pytest.mark.asyncio
+async def test_ai_worker_timeout_returns_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = AppConfig()
+    cfg.assistant.timeout_seconds = 0.01
+    controller = DesktopController(cfg)
+
+    async def fake_wait_for(awaitable: Any, timeout: float) -> object:
+        _ = timeout
+        awaitable.cancel()
+        raise TimeoutError
+
+    monkeypatch.setattr("vox2ai.desktop_server.asyncio.wait_for", fake_wait_for)
+
+    result = await controller._run_ai_worker(lambda: "too late")
+
+    assert isinstance(result, Vox2AIError)
+    assert "timed out" in str(result)
 
 
 @pytest.mark.asyncio
