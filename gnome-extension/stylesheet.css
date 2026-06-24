@@ -31,10 +31,20 @@
 
 .vox2ai-shell {
   min-width: 360px;
+  max-height: 720px;
 }
 
 .vox2ai-scroll {
   max-height: 520px;
+}
+
+.vox2ai-answer-scroll {
+  max-height: 420px;
+  min-height: 120px;
+}
+
+.vox2ai-answer-content {
+  spacing: 8px;
 }
 
 .vox2ai-header {

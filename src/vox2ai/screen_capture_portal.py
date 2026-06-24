@@ -1,27 +1,30 @@
 """XDG Desktop Portal screenshot capture.
 
-ponytail: the portal is the normal screenshot path. GNOME Shell DBus and
- gnome-screenshot are not viable per real-environment testing.
+ponytail: no portal introspection — dbus-next fails on
+power-saver-enabled property name in portal introspection XML.
+Uses low-level dbus_next.Message for the method call.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import shutil
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from vox2ai.errors import Vox2AIError
 
 try:
-    from dbus_next import BusType, Variant  # type: ignore[attr-defined]
+    from dbus_next import BusType, Message, Variant  # type: ignore[attr-defined]
     from dbus_next import introspection as intr
     from dbus_next.aio import MessageBus  # type: ignore[attr-defined]
+    from dbus_next.errors import DBusError
 
     HAS_DBUS_NEXT = True
-except Exception:  # pragma: no cover - optional runtime dependency
+except Exception:  # pragma: no cover — optional runtime dependency
     HAS_DBUS_NEXT = False
 
 
@@ -40,8 +43,6 @@ class PortalScreenshotResult:
 
 
 def _runtime_temp_dir() -> Path:
-    import os
-
     base = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp")
     return base / "vox2ai-screen"
 
@@ -60,7 +61,7 @@ def _uri_to_path(uri: str) -> Path | Vox2AIError:
         return Vox2AIError(f"Portal returned non-file URI: {uri}")
     parsed = urlparse(uri)
     try:
-        return Path(parsed.path).resolve()
+        return Path(unquote(parsed.path)).resolve()
     except Exception as exc:
         return Vox2AIError(f"Invalid portal URI path: {exc}")
 
@@ -81,16 +82,8 @@ def _copy_portal_file(source: Path) -> Path | Vox2AIError:
     return dest
 
 
-def _request_path(bus: MessageBus, request_token: str) -> str | None:
-    unique_name = bus.unique_name
-    if unique_name is None:
-        return None
-    sender = unique_name.replace(":", "").replace(".", "")
-    return f"/org/freedesktop/portal/desktop/request/{sender}/{request_token}"
-
-
 def _request_introspection() -> intr.Node:
-    # ponytail: static introspection avoids racing the portal-created object.
+    # ponytail: static Node for the Request interface only — no remote introspect.
     return intr.Node(
         "",
         [
@@ -112,30 +105,13 @@ def _request_introspection() -> intr.Node:
     )
 
 
-async def portal_available() -> bool:
-    """Return True if the portal screenshot interface is reachable."""
-    if not HAS_DBUS_NEXT:
-        return False
-    try:
-        bus = await MessageBus(bus_type=BusType.SESSION).connect()
-        try:
-            introspect = await bus.introspect(DESTINATION, OBJECT_PATH)
-            proxy = bus.get_proxy_object(DESTINATION, OBJECT_PATH, introspect)
-            iface = proxy.get_interface(INTERFACE)
-            return iface is not None
-        finally:
-            bus.disconnect()  # type: ignore[no-untyped-call]
-    except Exception:
-        return False
-
-
 async def capture_screenshot_via_portal(
     timeout_seconds: float = 30.0,
 ) -> PortalScreenshotResult:
-    """Capture a screenshot through the XDG Desktop Portal.
+    """Capture screenshot through XDG Desktop Portal.
 
-    Returns a structured result. On success the returned path is owned by
-    vox2ai under $XDG_RUNTIME_DIR/vox2ai-screen or /tmp/vox2ai-screen.
+    ponytail: uses raw dbus_next.Message + bus.call() to avoid
+    introspection. Only the Request interface is introspected statically.
     """
     if not HAS_DBUS_NEXT:
         return PortalScreenshotResult(
@@ -144,19 +120,39 @@ async def capture_screenshot_via_portal(
 
     bus = await MessageBus(bus_type=BusType.SESSION).connect()
     try:
-        introspect = await bus.introspect(DESTINATION, OBJECT_PATH)
-        proxy = bus.get_proxy_object(DESTINATION, OBJECT_PATH, introspect)
-        iface = proxy.get_interface(INTERFACE)
-
-        request_token = f"vox2ai{uuid.uuid4().hex}"
+        handle_token = f"v2a{uuid.uuid4().hex}"
         options = {
             "interactive": Variant("b", True),
-            "handle_token": Variant("s", request_token),
+            "modal": Variant("b", True),
+            "handle_token": Variant("s", handle_token),
         }
 
-        request_path = _request_path(bus, request_token)
-        if request_path is None:
-            return PortalScreenshotResult(ok=False, error="Could not determine DBus request path.")
+        msg = Message(
+            destination=DESTINATION,
+            path=OBJECT_PATH,
+            interface=INTERFACE,
+            member="Screenshot",
+            signature="sa{sv}",
+            body=["", options],
+        )
+
+        try:
+            reply = await bus.call(msg)
+        except DBusError as e:
+            return PortalScreenshotResult(
+                ok=False,
+                error=f"XDG Desktop Portal Screenshot call failed: {e}",
+            )
+
+        assert reply is not None, "bus.call returned None"
+        raw_body = reply.body if isinstance(reply.body, list) else [reply.body]
+        request_path = str(raw_body[0]) if raw_body else ""
+        if not request_path:
+            return PortalScreenshotResult(ok=False, error="Portal did not return a request handle.")
+
+        request_node = _request_introspection()
+        request_proxy = bus.get_proxy_object(DESTINATION, request_path, request_node)
+        request_iface = request_proxy.get_interface(REQUEST_INTERFACE)
 
         loop = asyncio.get_running_loop()
         future: asyncio.Future[tuple[int, dict[str, Variant]]] = loop.create_future()
@@ -165,17 +161,7 @@ async def capture_screenshot_via_portal(
             if not future.done():
                 future.set_result((response_code, results))
 
-        request_proxy = bus.get_proxy_object(DESTINATION, request_path, _request_introspection())
-        request_iface = request_proxy.get_interface(REQUEST_INTERFACE)
         request_iface.on_response(on_response)  # type: ignore[attr-defined]
-
-        try:
-            await iface.call_screenshot("", options)  # type: ignore[attr-defined]
-        except Exception as exc:
-            return PortalScreenshotResult(
-                ok=False,
-                error=f"XDG Desktop Portal Screenshot call failed: {exc}",
-            )
 
         try:
             response_code, results = await asyncio.wait_for(future, timeout=timeout_seconds)

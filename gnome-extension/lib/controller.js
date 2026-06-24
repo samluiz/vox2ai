@@ -3,6 +3,7 @@ import St from 'gi://St';
 import {State} from './state.js';
 import {Connection} from './connection.js';
 import {BackendService} from './backendService.js';
+import {FEATURE_FLAGS} from './ui/featureFlags.js';
 
 function safeGet(settings, method, key, fallback) {
     try {
@@ -40,6 +41,8 @@ export const Controller = class Controller {
         this._lastAnswerNotified = '';
         this._lastCommandNotified = '';
         this._screenCaptureSeq = 0;
+        this._popupHandler = null;
+        this._pendingScreenFlow = null;
 
         this._state = {
             status: State.DISCONNECTED,
@@ -414,6 +417,21 @@ export const Controller = class Controller {
         };
     }
 
+    setPopupHandler(handler) {
+        this._popupHandler = handler;
+    }
+
+    _openForScreenQuestion() {
+        if (!this._popupHandler)
+            return;
+        this._popupHandler.open();
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 150, () => {
+            if (this._popupHandler?.focusInput)
+                this._popupHandler.focusInput();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
     async askAboutScreen() {
         if (!this.canAskAboutScreen()) {
             this._setState({
@@ -426,6 +444,11 @@ export const Controller = class Controller {
         const ok = await this.ensureBackendRunning();
         if (!ok)
             return;
+
+        this._pendingScreenFlow = {
+            startedAt: Date.now(),
+            previousStatus: this._state.status,
+        };
 
         this._clearSession(false);
         this._setState({
@@ -457,6 +480,14 @@ export const Controller = class Controller {
             transcript: clean,
             answer: '',
             answerStreaming: true,
+            // ponytail: screen context is single-use; clear id so user can
+            // capture another screenshot in the same conversation.
+            screenContext: {
+                ...this._state.screenContext,
+                id: null,
+                mode: null,
+                status: 'used',
+            },
         });
         this._send({
             type: 'submit_screen_question',
@@ -835,19 +866,32 @@ export const Controller = class Controller {
                         error: null,
                     },
                 });
+                if (this._pendingScreenFlow) {
+                    this._pendingScreenFlow = null;
+                    this._openForScreenQuestion();
+                }
                 break;
             case 'screen_context_error':
-                this._setState({
-                    status: State.ERROR,
-                    error: event.message || 'Ask about screen is unavailable.',
-                    lastBackendError: event.message || 'Screen context error',
-                    screenContext: {
-                        ...this._state.screenContext,
-                        status: 'error',
-                        error: event.message || 'Screen context error',
-                    },
-                });
-                this._notifyError('Ask about screen', event.message || 'Screen context error');
+                {
+                    const message = event.message || 'Ask about screen is unavailable.';
+                    const stage = event.stage || '';
+                    const scopeMsg = stage ? `${stage}: ${message}` : message;
+                    this._setState({
+                        status: State.ERROR,
+                        error: `Screen capture failed — ${scopeMsg}`,
+                        lastBackendError: message,
+                        screenContext: {
+                            ...this._state.screenContext,
+                            status: 'error',
+                            error: message,
+                        },
+                    });
+                    this._notifyError('Ask about screen', message);
+                    if (this._pendingScreenFlow) {
+                        this._pendingScreenFlow = null;
+                        this._openForScreenQuestion();
+                    }
+                }
                 break;
             case 'settings_error':
                 this._setState({

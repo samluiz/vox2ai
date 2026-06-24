@@ -1,5 +1,6 @@
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
+import Pango from 'gi://Pango';
 import St from 'gi://St';
 
 import {
@@ -27,16 +28,25 @@ function hbox(spacing = 0, styleClass = '') {
     });
 }
 
+function wrapLabel(label, wrapMode = Pango.WrapMode.WORD_CHAR) {
+    const ct = label.clutter_text;
+    ct.set_line_wrap(true);
+    ct.set_line_wrap_mode(wrapMode);
+    ct.set_ellipsize(Pango.EllipsizeMode.NONE);
+    label.x_expand = true;
+    return label;
+}
+
 function markupLabel(markup, styleClass) {
     const label = new St.Label({style_class: styleClass});
-    label.clutter_text.set_line_wrap(true);
+    wrapLabel(label);
     label.clutter_text.set_markup(markup);
     return label;
 }
 
-function plainLabel(text, styleClass) {
+function plainLabel(text, styleClass, wrapMode = Pango.WrapMode.WORD_CHAR) {
     const label = new St.Label({text, style_class: styleClass});
-    label.clutter_text.set_line_wrap(true);
+    wrapLabel(label, wrapMode);
     return label;
 }
 
@@ -141,7 +151,7 @@ export function renderCodeBlock(
     ));
     card.add_child(header);
 
-    const label = plainLabel(String(code || ''), 'vox2ai-code-text');
+    const label = plainLabel(String(code || ''), 'vox2ai-code-text', Pango.WrapMode.CHAR);
     card.add_child(label);
     if (copyLabel === 'Copy command') {
         const actions = hbox(6, 'vox2ai-command-card-actions');

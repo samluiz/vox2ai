@@ -5,6 +5,9 @@ import St from "gi://St";
 import * as PopupMenu from "resource:///org/gnome/shell/ui/popupMenu.js";
 import { State } from "../state.js";
 import { renderMarkdown } from "./markdownView.js";
+import { ThinkingIndicator } from "./thinkingIndicator.js";
+import { ScrollableAnswerArea } from "./scrollableAnswer.js";
+import { FEATURE_FLAGS } from "./featureFlags.js";
 
 const _ = (s) => s;
 
@@ -63,6 +66,7 @@ export const AssistantWidget = class AssistantWidget
     this._renderedPartialTranscript = "";
     this._renderedVoiceActive = false;
     this._renderedSilenceBucket = 0;
+    this._thinkingIndicator = null;
     this._destroyed = false;
 
     this._buildShell();
@@ -122,6 +126,7 @@ export const AssistantWidget = class AssistantWidget
 
       this._syncStatus(state);
       this._stopWaveform();
+      this._stopThinkingIndicator();
       this._clearActor(this._body);
       this._clearActor(this._footer);
       this._entry = null;
@@ -140,10 +145,7 @@ export const AssistantWidget = class AssistantWidget
           this._renderListening(state);
           break;
         case State.TRANSCRIBING:
-          this._renderProcessing(
-            state.processingMessage || _("Processing speech..."),
-            true,
-          );
+          this._renderTranscribing(state);
           break;
         case State.THINKING:
           this._renderThinking(state);
@@ -364,15 +366,50 @@ export const AssistantWidget = class AssistantWidget
     this._body.add_child(box);
   }
 
+  _renderTranscribing(state) {
+    const box = vbox(10, "vox2ai-state-box");
+    const msg = state.processingMessage || _("Processing speech...");
+    if (FEATURE_FLAGS.thinkingIndicator) {
+      this._thinkingIndicator = new ThinkingIndicator({ label: msg });
+      box.add_child(this._thinkingIndicator.actor);
+      this._thinkingIndicator.start();
+    } else {
+      box.add_child(wrappedLabel(msg, "vox2ai-processing-label"));
+    }
+    box.add_child(
+      this._button(_("Cancel"), "vox2ai-secondary-button", () => {
+        this._controller.cancel();
+      }),
+    );
+    this._body.add_child(box);
+  }
+
   _renderThinking(state) {
     const box = vbox(9, "vox2ai-state-box");
+    const useScroll = FEATURE_FLAGS.scrollableAnswers;
+    const answerContent = useScroll ? vbox(9) : box;
+
     this._addMessage(
-      box,
+      answerContent,
       _("You"),
       state.userText || state.transcript || "",
       "vox2ai-message-user",
     );
-    box.add_child(wrappedLabel(_("Thinking..."), "vox2ai-processing-label"));
+    const useAnim = FEATURE_FLAGS.thinkingIndicator;
+    if (useAnim) {
+      this._thinkingIndicator = new ThinkingIndicator({ label: _("Thinking") });
+      answerContent.add_child(this._thinkingIndicator.actor);
+      this._thinkingIndicator.start();
+    } else {
+      answerContent.add_child(wrappedLabel(_("Thinking..."), "vox2ai-processing-label"));
+    }
+
+    if (useScroll) {
+      const scrollArea = new ScrollableAnswerArea();
+      scrollArea.setContent(answerContent);
+      box.add_child(scrollArea.actor);
+    }
+
     box.add_child(
       this._button(_("Cancel"), "vox2ai-secondary-button", () => {
         this._controller.cancel();
@@ -383,20 +420,40 @@ export const AssistantWidget = class AssistantWidget
 
   _renderAnswering(state) {
     const box = vbox(9, "vox2ai-state-box");
+    const useScroll = FEATURE_FLAGS.scrollableAnswers;
+    const answerContent = useScroll ? vbox(9) : box;
+
     this._addMessage(
-      box,
+      answerContent,
       _("You"),
       state.userText || state.transcript || "",
       "vox2ai-message-user",
     );
-    box.add_child(
+    answerContent.add_child(
       new St.Label({ text: "vox2ai", style_class: "vox2ai-message-label" }),
     );
-    box.add_child(this._renderBasicAnswer(state.answer));
-    if (state.answerStreaming)
-      box.add_child(
-        new St.Label({ text: "▊", style_class: "vox2ai-stream-cursor" }),
-      );
+    if (!state.answer && state.answerStreaming && FEATURE_FLAGS.thinkingIndicator) {
+      this._thinkingIndicator = new ThinkingIndicator({
+        label: _("Writing answer"),
+      });
+      answerContent.add_child(this._thinkingIndicator.actor);
+      this._thinkingIndicator.start();
+    } else {
+      answerContent.add_child(this._renderBasicAnswer(state.answer));
+      if (state.answerStreaming)
+        answerContent.add_child(
+          new St.Label({ text: "▊", style_class: "vox2ai-stream-cursor" }),
+        );
+    }
+
+    if (useScroll) {
+      const scrollArea = new ScrollableAnswerArea();
+      scrollArea.setContent(answerContent);
+      box.add_child(scrollArea.actor);
+      this._scrollArea = scrollArea;
+      if (state.answerStreaming)
+        scrollArea.scrollToBottom();
+    }
 
     const row = hbox(8, "vox2ai-button-row");
     if (state.answerStreaming) {
@@ -454,15 +511,30 @@ export const AssistantWidget = class AssistantWidget
         this._controller.startRecording();
       }),
     );
+    if (this._controller.canAskAboutScreen()) {
+      row.add_child(
+        this._button(_("Screen"), "vox2ai-secondary-button", () => {
+          this._controller.askAboutScreen();
+        }),
+      );
+    }
     box.add_child(row);
     return box;
   }
 
   _renderScreenCapturing() {
     const box = vbox(10, "vox2ai-state-box");
-    box.add_child(
-      wrappedLabel(_("Capturing screen..."), "vox2ai-processing-label"),
-    );
+    if (FEATURE_FLAGS.thinkingIndicator) {
+      this._thinkingIndicator = new ThinkingIndicator({
+        label: _("Capturing screen"),
+      });
+      box.add_child(this._thinkingIndicator.actor);
+      this._thinkingIndicator.start();
+    } else {
+      box.add_child(
+        wrappedLabel(_("Capturing screen..."), "vox2ai-processing-label"),
+      );
+    }
     box.add_child(
       this._button(_("Cancel"), "vox2ai-secondary-button", () => {
         this._controller.cancel();
@@ -517,26 +589,46 @@ export const AssistantWidget = class AssistantWidget
   _renderScreenAnswering(state) {
     const box = vbox(9, "vox2ai-state-box");
     const mode = state.screenContext?.mode || "screen";
-    box.add_child(
+    const useScroll = FEATURE_FLAGS.scrollableAnswers;
+    const answerContent = useScroll ? vbox(9) : box;
+
+    answerContent.add_child(
       new St.Label({
         text: `Screen context: ${mode.toUpperCase()}`,
         style_class: "vox2ai-message-label",
       }),
     );
     this._addMessage(
-      box,
+      answerContent,
       _("You"),
       state.userText || state.transcript || "",
       "vox2ai-message-user",
     );
-    box.add_child(
+    answerContent.add_child(
       new St.Label({ text: "vox2ai", style_class: "vox2ai-message-label" }),
     );
-    box.add_child(this._renderBasicAnswer(state.answer));
-    if (state.answerStreaming)
-      box.add_child(
-        new St.Label({ text: "▊", style_class: "vox2ai-stream-cursor" }),
-      );
+    if (!state.answer && state.answerStreaming && FEATURE_FLAGS.thinkingIndicator) {
+      this._thinkingIndicator = new ThinkingIndicator({
+        label: _("Analyzing screen"),
+      });
+      answerContent.add_child(this._thinkingIndicator.actor);
+      this._thinkingIndicator.start();
+    } else {
+      answerContent.add_child(this._renderBasicAnswer(state.answer));
+      if (state.answerStreaming)
+        answerContent.add_child(
+          new St.Label({ text: "▊", style_class: "vox2ai-stream-cursor" }),
+        );
+    }
+
+    if (useScroll) {
+      const scrollArea = new ScrollableAnswerArea();
+      scrollArea.setContent(answerContent);
+      box.add_child(scrollArea.actor);
+      this._scrollArea = scrollArea;
+      if (state.answerStreaming)
+        scrollArea.scrollToBottom();
+    }
 
     const row = hbox(8, "vox2ai-button-row");
     if (state.answerStreaming) {
@@ -832,6 +924,13 @@ export const AssistantWidget = class AssistantWidget
     return Clutter.EVENT_STOP;
   }
 
+  _stopThinkingIndicator() {
+    if (this._thinkingIndicator) {
+        this._thinkingIndicator.stop();
+        this._thinkingIndicator = null;
+    }
+  }
+
   focusInput() {
     try {
       if (this._entry) this._entry.grab_key_focus();
@@ -906,6 +1005,7 @@ export const AssistantWidget = class AssistantWidget
   destroy() {
     this._destroyed = true;
     this._stopWaveform();
+    this._stopThinkingIndicator();
     if (this._controller && this._onUpdate)
       this._controller.offUpdate(this._onUpdate);
     this._onUpdate = null;

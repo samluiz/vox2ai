@@ -43,6 +43,15 @@ export const PanelIndicator = class PanelIndicator extends PanelMenu.Button {
         this._onControllerUpdate = (state) => this._syncDot(state);
         controller.onUpdate(this._onControllerUpdate);
         this._syncDot(controller.state);
+
+        this._controller.setPopupHandler({
+            open: () => this.menu.open(),
+            close: () => this.menu.close(),
+            focusInput: () => {
+                if (this._assistantItem)
+                    this._assistantItem.focusInput();
+            },
+        });
     }
 
     _onMenuOpened() {
