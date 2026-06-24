@@ -35,6 +35,7 @@ dependencies = [
     "textual>=0.41",
     "numpy>=1.24",
     "websockets>=13.0",
+    "dbus-next>=0.2",
 ]
 
 [project.optional-dependencies]

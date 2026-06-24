@@ -945,19 +945,27 @@ class DesktopController:
         if not self._config.context.screen_context_enabled:
             message = "Ask about screen is disabled in Settings."
             self._last_screen_error = message
-            self._send(ScreenContextErrorEvent(message=message))
+            self._send(ScreenContextErrorEvent(message=message, stage="config", method=""))
             return None
 
-        self._send(ScreenCaptureStartedEvent())
+        status = screen_capture_status(self._config)
+        capture_method = str(status["method"])
+        self._send(ScreenCaptureStartedEvent(method=capture_method))
         captured: CapturedScreen | Vox2AIError
         provided = (command.image_path if command else "").strip()
         if provided and command is not None:
             captured = _captured_screen_from_frontend(command)
         else:
-            captured = await _run_blocking(capture_screen, self._config)
+            captured = await capture_screen(self._config)
         if isinstance(captured, Vox2AIError):
             self._last_screen_error = str(captured)
-            self._send(ScreenContextErrorEvent(message=str(captured)))
+            self._send(
+                ScreenContextErrorEvent(
+                    message=str(captured),
+                    stage="capture",
+                    method=capture_method,
+                )
+            )
             self._send(self._capabilities_event())
             return None
 
@@ -970,7 +978,13 @@ class DesktopController:
             message = "Active model is not marked as vision-capable."
             self._last_screen_error = message
             _unlink_silent(captured.image_path)
-            self._send(ScreenContextErrorEvent(message=message))
+            self._send(
+                ScreenContextErrorEvent(
+                    message=message,
+                    stage="vision",
+                    method=capture_method,
+                )
+            )
             self._send(self._capabilities_event())
             return None
         context: dict[str, Any] = {
@@ -990,6 +1004,7 @@ class DesktopController:
                 context_id=context_id,
                 width=captured.width,
                 height=captured.height,
+                method=capture_method,
             )
         )
 
@@ -1003,7 +1018,13 @@ class DesktopController:
         if isinstance(ocr, Vox2AIError):
             self._last_screen_error = str(ocr)
             self._cleanup_screen_context(context_id)
-            self._send(ScreenContextErrorEvent(message=str(ocr)))
+            self._send(
+                ScreenContextErrorEvent(
+                    message=str(ocr),
+                    stage="ocr",
+                    method=capture_method,
+                )
+            )
             self._send(self._capabilities_event())
             return None
 
@@ -1034,6 +1055,8 @@ class DesktopController:
         self._state = ServerState.THINKING
         self._send(TranscriptEvent(text=clean, raw_text=None, source="screen"))
         self._send_state("thinking", "Thinking...")
+        self._append_conversation("user", clean)
+        self._send(self._conversation_state_event())
         self._send(AnswerStartEvent())
 
         try:
@@ -1188,6 +1211,7 @@ class DesktopController:
         """
         llm_prompt = self._build_prompt(prompt, context)
         self._append_conversation("user", prompt)
+        self._send(self._conversation_state_event())
         decision = await self._run_ai_worker(_do_decision, self._llm_client, llm_prompt)
         if generation != self._operation_generation:
             return
@@ -1583,31 +1607,6 @@ def _screen_capture_available() -> bool:
 
 def _ocr_available() -> bool:
     return bool(ocr_status()["available"])
-
-
-def _capture_screen(config: AppConfig) -> dict[str, Any] | Vox2AIError:
-    captured = capture_screen(config)
-    if isinstance(captured, Vox2AIError):
-        return captured
-    return {
-        "image_path": captured.image_path,
-        "mime_type": captured.mime_type,
-        "width": captured.width,
-        "height": captured.height,
-    }
-
-
-def _ocr_screen(image_path: Path, config: AppConfig) -> dict[str, Any] | Vox2AIError:
-    ocr = ocr_screen(image_path, config)
-    if isinstance(ocr, Vox2AIError):
-        return ocr
-    return {
-        "text": ocr.text,
-        "confidence": ocr.confidence,
-        "engine": ocr.engine,
-        "language": ocr.language,
-        "blocks": [],
-    }
 
 
 def _ocr_language(primary_language: str) -> str:

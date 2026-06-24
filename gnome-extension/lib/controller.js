@@ -1,5 +1,4 @@
 import GLib from 'gi://GLib';
-import Shell from 'gi://Shell';
 import St from 'gi://St';
 import {State} from './state.js';
 import {Connection} from './connection.js';
@@ -74,13 +73,22 @@ export const Controller = class Controller {
             copyFeedback: '',
             conversationMode: safeGet(settings, 'get_boolean', 'conversation-mode', false),
             conversationTurnCount: 0,
+            conversationAvailable: true,
+            conversationMaxTurns: safeGet(settings, 'get_int', 'conversation-max-turns', 8),
             screenContext: {
                 id: null,
                 mode: null,
                 status: 'idle',
                 error: null,
             },
+            screenContextAvailable: false,
+            screenContextEnabled: safeGet(settings, 'get_boolean', 'screen-context-enabled', false),
+            screenContextError: null,
             safeMode: safeGet(settings, 'get_boolean', 'safe-mode', false),
+            features: {
+                conversation: {available: true, enabled: false, initialized: true, error: null},
+                screenContext: {available: false, enabled: false, initialized: false, error: null},
+            },
         };
     }
 
@@ -375,9 +383,45 @@ export const Controller = class Controller {
             this._setStatus(State.THINKING);
     }
 
+    _featuresFromCapabilities(event) {
+        const caps = event?.capabilities || {};
+        const screen = caps.screen_capture || {};
+        const vision = caps.vision || {};
+        const ocr = caps.ocr || {};
+        const screenEnabled = safeGet(this._settings, 'get_boolean', 'screen-context-enabled', false);
+        const screenAvailable = !!screen?.available && !this._state.safeMode;
+        const screenUsable = screenEnabled && screenAvailable && (vision?.available || ocr?.available);
+        const conversationEnabled = safeGet(this._settings, 'get_boolean', 'conversation-mode', false);
+        const conversationAvailable = !this._state.safeMode;
+        return {
+            screenContextAvailable: screenUsable,
+            screenContextEnabled: screenEnabled,
+            screenContextError: screenUsable ? null : (screen?.reason || vision?.reason || ocr?.reason || 'Screen context unavailable'),
+            features: {
+                conversation: {
+                    available: conversationAvailable,
+                    enabled: conversationEnabled && conversationAvailable,
+                    initialized: true,
+                    error: conversationAvailable ? null : 'Safe mode is on',
+                },
+                screenContext: {
+                    available: screenUsable,
+                    enabled: screenEnabled && screenAvailable,
+                    initialized: true,
+                    error: screenUsable ? null : (this._state.safeMode ? 'Safe mode is on' : 'Screen context unavailable'),
+                },
+            },
+        };
+    }
+
     async askAboutScreen() {
-        if (!this.canAskAboutScreen())
+        if (!this.canAskAboutScreen()) {
+            this._setState({
+                status: State.ERROR,
+                error: this._state.screenContextError || 'Screen context is not available.',
+            });
             return;
+        }
 
         const ok = await this.ensureBackendRunning();
         if (!ok)
@@ -393,20 +437,12 @@ export const Controller = class Controller {
                 error: null,
             },
         });
-        const captured = await this._captureScreenWithShell();
-        if (captured) {
-            this._send({
-                type: 'capture_screen_context',
-                mode: 'auto',
-                image_path: captured.path,
-                mime_type: 'image/png',
-                width: 0,
-                height: 0,
-                method: 'gnome-shell',
-            });
-        } else {
-            this._send({type: 'capture_screen_context', mode: 'auto'});
-        }
+
+        // ponytail: backend owns portal screenshot; extension only asks.
+        this._send({
+            type: 'capture_screen_context',
+            mode: 'portal',
+        });
     }
 
     submitScreenQuestion(question) {
@@ -430,79 +466,16 @@ export const Controller = class Controller {
     }
 
     canAskAboutScreen() {
-        if (!safeGet(this._settings, 'get_boolean', 'screen-context-enabled', false))
-            return false;
-        const caps = this._state.capabilities?.capabilities || {};
-        const screen = caps.screen_capture;
-        const vision = caps.vision;
-        const ocr = caps.ocr;
-        return !!(screen?.available && (vision?.available || ocr?.available));
+        if (this._state.safeMode) return false;
+        return this._state.features?.screenContext?.available === true;
     }
 
-    async _captureScreenWithShell() {
-        if (!Shell.Screenshot)
-            return null;
-
-        const dir = GLib.build_filenamev([GLib.get_tmp_dir(), 'vox2ai-screen']);
-        try {
-            GLib.mkdir_with_parents(dir, 0o700);
-        } catch (e) {
-            log(`[vox2ai] could not create screenshot directory: ${e}`);
-            return null;
-        }
-
-        this._screenCaptureSeq += 1;
-        const path = GLib.build_filenamev([
-            dir,
-            `screen-${GLib.get_real_time()}-${this._screenCaptureSeq}.png`,
-        ]);
-
-        return new Promise(resolve => {
-            let done = false;
-            const finish = result => {
-                if (done)
-                    return;
-                done = true;
-                if (timer)
-                    GLib.source_remove(timer);
-                resolve(result);
-            };
-
-            const timer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 4000, () => {
-                log('[vox2ai] GNOME Shell screenshot timed out; falling back to backend capture');
-                finish(null);
-                return GLib.SOURCE_REMOVE;
-            });
-
-            try {
-                const screenshot = new Shell.Screenshot();
-                screenshot.screenshot(false, path, (...args) => {
-                    try {
-                        let success = false;
-                        if (typeof screenshot.screenshot_finish === 'function') {
-                            const asyncResult = args.length > 1 ? args[1] : args[0];
-                            const finishResult = screenshot.screenshot_finish(asyncResult);
-                            if (Array.isArray(finishResult))
-                                success = !!finishResult[0];
-                            else
-                                success = !!finishResult;
-                        } else {
-                            success = args.some(arg => arg === true);
-                        }
-                        finish(success ? {path} : null);
-                    } catch (e) {
-                        log(`[vox2ai] GNOME Shell screenshot finish error: ${e}`);
-                        finish(null);
-                    }
-                });
-            } catch (e) {
-                log(`[vox2ai] GNOME Shell screenshot error: ${e}`);
-                finish(null);
-            }
-        });
+    canToggleConversation() {
+        return !this._state.safeMode;
     }
 
     toggleConversationMode() {
+        if (this._state.safeMode) return;
         const enabled = !this._state.conversationMode;
         this._setState({conversationMode: enabled});
         try {
@@ -792,12 +765,16 @@ export const Controller = class Controller {
                 });
                 break;
             case 'capabilities':
-                this._setState({capabilities: event});
+                this._setState({
+                    capabilities: event,
+                    ...this._featuresFromCapabilities(event),
+                });
                 break;
             case 'conversation_state':
                 this._setState({
                     conversationMode: !!event.enabled,
                     conversationTurnCount: event.turn_count || 0,
+                    conversationMaxTurns: event.max_turns || this._state.conversationMaxTurns,
                 });
                 break;
             case 'conversation_cleared':

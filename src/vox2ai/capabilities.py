@@ -77,6 +77,9 @@ def build_capabilities(
         "screen": {
             "capture_available": screen_enabled and screen_available,
             "capture_method": screen_status["method"],
+            "portal_available": bool(screen_status.get("portal_available")),
+            "gnome_shell_dbus_available": bool(screen_status.get("gnome_shell_dbus_available")),
+            "gnome_screenshot_available": bool(screen_status.get("gnome_screenshot_available")),
             "vision_available": vision_available,
             "ocr_available": ocr_available,
             "ocr_engine": ocr["engine"],

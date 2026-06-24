@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import tempfile
 import uuid
@@ -10,6 +11,10 @@ from pathlib import Path
 
 from vox2ai.config import AppConfig
 from vox2ai.errors import Vox2AIError
+from vox2ai.screen_capture_portal import (
+    HAS_DBUS_NEXT,
+    capture_screenshot_via_portal,
+)
 
 
 @dataclass(frozen=True)
@@ -34,31 +39,43 @@ def screen_capture_status(config: AppConfig) -> dict[str, object]:
         return {
             "available": False,
             "method": "disabled",
+            "portal_available": False,
+            "gnome_shell_dbus_available": False,
+            "gnome_screenshot_available": False,
             "reason": "Ask about screen is disabled in config.",
         }
 
+    # ponytail: only the XDG Desktop Portal is the normal capture path.
     method = config.context.screen_capture_method
-    if method in {"auto", "gnome-screenshot"} and _which("gnome-screenshot"):
-        return {"available": True, "method": "gnome-screenshot", "reason": None}
-
-    if method == "auto":
+    if method == "auto" or method == "portal":
+        portal = HAS_DBUS_NEXT
         return {
-            "available": True,
-            "method": "gnome-shell",
-            "reason": None,
+            "available": portal,
+            "method": "xdg-desktop-portal" if portal else "none",
+            "portal_available": portal,
+            "gnome_shell_dbus_available": False,
+            "gnome_screenshot_available": _which("gnome-screenshot"),
+            "reason": None if portal else "XDG Desktop Portal screenshot interface is unavailable",
         }
 
-    if method == "portal":
+    if method == "gnome-screenshot":
+        available = _which("gnome-screenshot")
         return {
-            "available": False,
-            "method": "portal",
-            "reason": "Portal capture is not implemented in this backend yet.",
+            "available": available,
+            "method": "gnome-screenshot",
+            "portal_available": HAS_DBUS_NEXT,
+            "gnome_shell_dbus_available": False,
+            "gnome_screenshot_available": available,
+            "reason": None if available else "gnome-screenshot is not installed.",
         }
 
     return {
         "available": False,
         "method": method,
-        "reason": "Install gnome-screenshot or configure a supported capture method.",
+        "portal_available": HAS_DBUS_NEXT,
+        "gnome_shell_dbus_available": False,
+        "gnome_screenshot_available": _which("gnome-screenshot"),
+        "reason": "Unsupported screen capture method.",
     }
 
 
@@ -72,13 +89,37 @@ def ocr_status() -> dict[str, object]:
     }
 
 
-def capture_screen(config: AppConfig) -> CapturedScreen | Vox2AIError:
+async def capture_screen(config: AppConfig) -> CapturedScreen | Vox2AIError:
+    """Capture the screen using the configured method.
+
+    ponytail: portal is the normal path; everything else is opt-in/debug.
+    """
     status = screen_capture_status(config)
     if not status["available"]:
         return Vox2AIError(str(status["reason"] or "Screen capture is unavailable."))
-    if status["method"] == "gnome-shell":
-        return Vox2AIError("GNOME Shell screenshot capture is required for this session.")
 
+    method = status["method"]
+    if method == "xdg-desktop-portal":
+        result = await capture_screenshot_via_portal(timeout_seconds=30.0)
+        if not result.ok or result.path is None:
+            return Vox2AIError(result.error or "Portal screenshot failed.")
+        image_path = Path(result.path)
+        width, height = png_dimensions(image_path)
+        return CapturedScreen(
+            image_path=image_path,
+            mime_type="image/png",
+            width=width,
+            height=height,
+            method="xdg-desktop-portal",
+        )
+
+    if method == "gnome-screenshot":
+        return _capture_with_gnome_screenshot(config)
+
+    return Vox2AIError("Screen capture method is not available.")
+
+
+def _capture_with_gnome_screenshot(_config: AppConfig) -> CapturedScreen | Vox2AIError:
     cache_dir = Path(tempfile.gettempdir()) / "vox2ai-screen"
     cache_dir.mkdir(parents=True, exist_ok=True)
     image_path = cache_dir / f"screen-{uuid.uuid4().hex}.png"
@@ -162,6 +203,4 @@ def png_dimensions(path: Path) -> tuple[int, int]:
 
 
 def _which(name: str) -> bool:
-    import shutil
-
     return shutil.which(name) is not None

@@ -252,6 +252,7 @@ class ModelProfileSetEvent:
 @dataclass
 class ScreenCaptureStartedEvent:
     type: Literal["screen_capture_started"] = "screen_capture_started"
+    method: str = ""
 
 
 @dataclass
@@ -260,6 +261,7 @@ class ScreenCaptureDoneEvent:
     context_id: str = ""
     width: int = 0
     height: int = 0
+    method: str = ""
 
 
 @dataclass
@@ -287,6 +289,8 @@ class ScreenContextReadyEvent:
 class ScreenContextErrorEvent:
     type: Literal["screen_context_error"] = "screen_context_error"
     message: str = ""
+    stage: str = ""
+    method: str = ""
 
 
 BackendEvent = (

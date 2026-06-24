@@ -210,7 +210,11 @@ export const AssistantWidget = class AssistantWidget
       [State.ERROR]: _("Error"),
     };
 
-    this._status.text = statusMap[state.status] || "";
+    let statusText = statusMap[state.status] || "";
+    if (state.conversationMode && state.conversationTurnCount !== undefined) {
+      statusText = `${statusText} · ${_("Conversation")} ${state.conversationTurnCount}/${state.conversationMaxTurns || 8}`;
+    }
+    this._status.text = statusText;
     this._status.style_class = "vox2ai-status";
     if (state.status === State.LISTENING)
       this._status.style_class = "vox2ai-status vox2ai-status-listening";
@@ -407,14 +411,51 @@ export const AssistantWidget = class AssistantWidget
           this._controller.copyAnswer();
         }),
       );
-      row.add_child(
-        this._button(_("Ask Again"), "vox2ai-secondary-button", () => {
-          this._controller.doneResult();
-        }),
-      );
+      if (!state.conversationMode) {
+        row.add_child(
+          this._button(_("Ask Again"), "vox2ai-secondary-button", () => {
+            this._controller.doneResult();
+          }),
+        );
+      }
     }
     if (row.get_children().length > 0) box.add_child(row);
+    if (!state.answerStreaming && state.conversationMode && state.answer) {
+      box.add_child(this._renderFollowUpInput());
+    }
     this._body.add_child(box);
+  }
+
+  _renderFollowUpInput() {
+    const box = vbox(10, "vox2ai-state-box");
+    box.add_child(wrappedLabel(_("Ask a follow-up..."), "vox2ai-hint"));
+    this._entry = new St.Entry({
+      style_class: "vox2ai-entry",
+      hint_text: _("Type a follow-up..."),
+      can_focus: true,
+      reactive: true,
+      track_hover: true,
+    });
+    this._entry.clutter_text.set_single_line_mode(true);
+    this._entry.clutter_text.set_activatable(true);
+    this._entry.clutter_text.connect("activate", () => this._onEntryActivate());
+    this._entry.connect("key-press-event", (_actor, event) =>
+      this._onEntryKeyPress(event),
+    );
+    box.add_child(this._entry);
+    const row = hbox(8, "vox2ai-button-row");
+    row.add_child(
+      this._button(_("Send"), "vox2ai-primary-button", () =>
+        this._onEntryActivate(),
+      ),
+    );
+    row.add_child(
+      this._button(_("Record"), "vox2ai-secondary-button", () => {
+        this._controller.startRecording();
+      }),
+    );
+    box.add_child(row);
+    return box;
   }
 
   _renderScreenCapturing() {
@@ -510,13 +551,18 @@ export const AssistantWidget = class AssistantWidget
           this._controller.copyAnswer();
         }),
       );
-      row.add_child(
-        this._button(_("Ask Again"), "vox2ai-secondary-button", () => {
-          this._controller.doneResult();
-        }),
-      );
+      if (!state.conversationMode) {
+        row.add_child(
+          this._button(_("Ask Again"), "vox2ai-secondary-button", () => {
+            this._controller.doneResult();
+          }),
+        );
+      }
     }
     if (row.get_children().length > 0) box.add_child(row);
+    if (!state.answerStreaming && state.conversationMode && state.answer) {
+      box.add_child(this._renderFollowUpInput());
+    }
     this._body.add_child(box);
   }
 
@@ -668,21 +714,24 @@ export const AssistantWidget = class AssistantWidget
   }
 
   _renderFooter() {
-    const modeLabel = this._controller.state.conversationMode
-      ? _("Conversation")
-      : _("Single");
-    this._footer.add_child(
-      this._link(modeLabel, () => this._controller.toggleConversationMode()),
-    );
-    if (this._controller.state.conversationMode) {
+    const state = this._controller.state;
+    if (!state.safeMode) {
+      const modeLabel = state.conversationMode
+        ? _(`Conversation · ${state.conversationTurnCount || 0} turns`)
+        : _("Single");
       this._footer.add_child(
-        new St.Label({ text: " · ", style_class: "vox2ai-footer-sep" }),
+        this._link(modeLabel, () => this._controller.toggleConversationMode()),
       );
-      this._footer.add_child(
-        this._link(_("New Conversation"), () => {
-          this._controller.clearConversation();
-        }),
-      );
+      if (state.conversationMode) {
+        this._footer.add_child(
+          new St.Label({ text: " · ", style_class: "vox2ai-footer-sep" }),
+        );
+        this._footer.add_child(
+          this._link(_("New"), () => {
+            this._controller.clearConversation();
+          }),
+        );
+      }
     }
     if (this._controller.canAskAboutScreen()) {
       this._footer.add_child(
@@ -704,7 +753,7 @@ export const AssistantWidget = class AssistantWidget
       new St.Label({ text: " · ", style_class: "vox2ai-footer-sep" }),
     );
     this._footer.add_child(
-      this._link(_("Restart Backend"), () => {
+      this._link(_("Reload"), () => {
         this._controller.restartBackend();
       }),
     );

@@ -365,10 +365,11 @@ async def test_screen_flow_chooses_vision_when_active_model_supports_vision(
     cfg.model_profiles.profiles["fast"].supports_vision = True
     image = tmp_path / "screen.png"
     image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 16)
-    monkeypatch.setattr(
-        "vox2ai.desktop_server.capture_screen",
-        lambda _cfg: CapturedScreen(image, "image/png", 100, 80, "test"),
-    )
+
+    async def fake_capture(_cfg: AppConfig) -> CapturedScreen:
+        return CapturedScreen(image, "image/png", 100, 80, "test")
+
+    monkeypatch.setattr("vox2ai.desktop_server.capture_screen", fake_capture)
     controller = DesktopController(cfg)
     events: list[Any] = []
     controller.set_broadcast(events.append, asyncio.get_running_loop())
@@ -390,10 +391,11 @@ async def test_screen_flow_chooses_ocr_when_vision_unavailable(
     cfg.model_profiles.profiles["fast"].supports_vision = False
     image = tmp_path / "screen.png"
     image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 16)
-    monkeypatch.setattr(
-        "vox2ai.desktop_server.capture_screen",
-        lambda _cfg: CapturedScreen(image, "image/png", 100, 80, "test"),
-    )
+
+    async def fake_capture(_cfg: AppConfig) -> CapturedScreen:
+        return CapturedScreen(image, "image/png", 100, 80, "test")
+
+    monkeypatch.setattr("vox2ai.desktop_server.capture_screen", fake_capture)
     monkeypatch.setattr(
         "vox2ai.desktop_server.ocr_screen",
         lambda _path, _cfg: OcrResult("visible text", 0.0, "tesseract", "eng"),
@@ -445,10 +447,11 @@ async def test_screen_flow_errors_when_neither_vision_nor_ocr_available(
     cfg.model_profiles.profiles["fast"].supports_vision = False
     image = tmp_path / "screen.png"
     image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 16)
-    monkeypatch.setattr(
-        "vox2ai.desktop_server.capture_screen",
-        lambda _cfg: CapturedScreen(image, "image/png", 100, 80, "test"),
-    )
+
+    async def fake_capture(_cfg: AppConfig) -> CapturedScreen:
+        return CapturedScreen(image, "image/png", 100, 80, "test")
+
+    monkeypatch.setattr("vox2ai.desktop_server.capture_screen", fake_capture)
     monkeypatch.setattr(
         "vox2ai.desktop_server.ocr_screen",
         lambda _path, _cfg: Vox2AIError("OCR is unavailable. Install tesseract."),
