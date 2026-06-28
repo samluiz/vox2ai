@@ -199,6 +199,12 @@ host = "127.0.0.1"
 port = 8765
 auto_start = true
 
+[wake_word]
+enabled = false
+model = "hey_jarvis"
+threshold = 0.5
+activation_sound = true
+
 [gnome]
 show_panel_indicator = true
 compact_density = true
@@ -463,6 +469,20 @@ class RecordingConfig(BaseModel):
         return validate_shortcut(v, allow_modifier_only=True)
 
 
+class WakeWordConfig(BaseModel):
+    enabled: bool = False
+    model: str = "hey_jarvis"
+    threshold: float = 0.5
+    activation_sound: bool = True
+
+    @field_validator("threshold")
+    @classmethod
+    def validate_threshold(cls, v: float) -> float:
+        if not 0.1 <= v <= 0.99:
+            raise ValueError("threshold must be between 0.1 and 0.99")
+        return v
+
+
 class OverlayConfig(BaseModel):
     enabled: bool = True
     position: str = "top-center"
@@ -705,6 +725,7 @@ class AppConfig(BaseModel):
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     activation: ActivationConfig = Field(default_factory=ActivationConfig)
     recording: RecordingConfig = Field(default_factory=RecordingConfig)
+    wake_word: WakeWordConfig = Field(default_factory=WakeWordConfig)
     transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
     overlay: OverlayConfig = Field(default_factory=OverlayConfig)
     commands: CommandsConfig = Field(default_factory=CommandsConfig)

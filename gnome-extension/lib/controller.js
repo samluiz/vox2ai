@@ -43,6 +43,15 @@ export const Controller = class Controller {
         this._screenCaptureSeq = 0;
         this._popupHandler = null;
         this._pendingScreenFlow = null;
+        this._preScreenCaptureState = null;
+        this._transientNoticeTimer = null;
+        this._screenCaptureTimeout = null;
+
+        this._chatSessions = {
+            activeSessionId: null,
+            sessions: [],
+            maxSessions: 5,
+        };
 
         this._state = {
             status: State.DISCONNECTED,
@@ -88,6 +97,17 @@ export const Controller = class Controller {
             screenContextEnabled: safeGet(settings, 'get_boolean', 'screen-context-enabled', false),
             screenContextError: null,
             safeMode: safeGet(settings, 'get_boolean', 'safe-mode', false),
+            wakeListening: false,
+            wakeModel: '',
+            goalActive: false,
+            goalText: '',
+            goalPhase: '',
+            goalDetail: '',
+            goalProgress: [],
+            goalIterations: 0,
+            goalConfirmQuestion: '',
+            goalConfirmTool: '',
+            goalConfirmArgs: '',
             features: {
                 conversation: {available: true, enabled: false, initialized: true, error: null},
                 screenContext: {available: false, enabled: false, initialized: false, error: null},
@@ -190,6 +210,11 @@ export const Controller = class Controller {
                     screen_capture_method: screenCaptureMethod(this._settings),
                     screen_capture_save_debug: safeGet(this._settings, 'get_boolean', 'screen-capture-save-debug', false),
                 },
+                wake_word: {
+                    enabled: safeGet(this._settings, 'get_boolean', 'wake-word-enabled', false),
+                    model: safeGet(this._settings, 'get_string', 'wake-word-model', 'hey_jarvis'),
+                    threshold: safeGet(this._settings, 'get_double', 'wake-word-threshold', 0.5),
+                },
             },
         });
     }
@@ -202,6 +227,19 @@ export const Controller = class Controller {
         }
         this._resetState();
         this._setStatus(State.DISCONNECTED);
+    }
+
+    startWakeWord() {
+        this._send({type: 'start_wake_word'});
+    }
+
+    stopWakeWord() {
+        this._send({type: 'stop_wake_word'});
+    }
+
+    submitGoal(goal, context = '') {
+        if (!goal || !goal.trim()) return;
+        this._send({type: 'submit_goal', goal: goal.trim(), context});
     }
 
     async startBackend() {
@@ -298,7 +336,7 @@ export const Controller = class Controller {
     _sleep(ms) {
         return new Promise(r => GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => {
             r();
-            return GLib.SOURCE_REMOVE;
+            return false;
         }));
     }
 
@@ -339,12 +377,17 @@ export const Controller = class Controller {
         this._send({type: 'cancel_current_operation'});
         this._resetToIdle();
 
+        if (this._screenCaptureTimeout) {
+            GLib.source_remove(this._screenCaptureTimeout);
+            this._screenCaptureTimeout = null;
+        }
+
         this._clearCancelTimer();
         this._cancelSafetyTimer = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 800, () => {
             this._cancelSafetyTimer = null;
             if (this._state.status !== State.IDLE)
                 this._resetToIdle();
-            return GLib.SOURCE_REMOVE;
+            return false;
         });
     }
 
@@ -377,6 +420,9 @@ export const Controller = class Controller {
             commandResult: null,
             error: null,
         });
+
+        if (this._state.conversationMode)
+            this._appendSessionMessage('user', clean, 'text');
 
         if (this._send({
             type: 'submit_text_prompt',
@@ -428,7 +474,18 @@ export const Controller = class Controller {
         GLib.timeout_add(GLib.PRIORITY_DEFAULT, 150, () => {
             if (this._popupHandler?.focusInput)
                 this._popupHandler.focusInput();
-            return GLib.SOURCE_REMOVE;
+            return false;
+        });
+    }
+
+    _handleWakeDetected() {
+        if (!this._popupHandler)
+            return;
+        this._popupHandler.open();
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 100, () => {
+            if (this._popupHandler?.focusInput)
+                this._popupHandler.focusInput();
+            return false;
         });
     }
 
@@ -445,6 +502,14 @@ export const Controller = class Controller {
         if (!ok)
             return;
 
+        this._preScreenCaptureState = {
+            status: this._state.status,
+            inputText: this._state.inputText,
+            conversationMode: this._state.conversationMode,
+            screenContext: { ...this._state.screenContext },
+            chatMessages: null,
+        };
+
         this._pendingScreenFlow = {
             startedAt: Date.now(),
             previousStatus: this._state.status,
@@ -460,6 +525,23 @@ export const Controller = class Controller {
                 error: null,
             },
         });
+
+        // Safety timeout: if capture doesn't complete in 12s, reset
+        if (this._screenCaptureTimeout)
+            GLib.source_remove(this._screenCaptureTimeout);
+        this._screenCaptureTimeout = GLib.timeout_add(
+            GLib.PRIORITY_DEFAULT, 12000, () => {
+                this._screenCaptureTimeout = null;
+                if (this._state.status === State.SCREEN_CAPTURING) {
+                    this._setState({
+                        status: State.ERROR,
+                        error: 'Screen capture timed out.',
+                        lastBackendError: 'Screen capture timed out',
+                    });
+                    this._pendingScreenFlow = null;
+                }
+                return false;
+            });
 
         // ponytail: backend owns portal screenshot; extension only asks.
         this._send({
@@ -480,8 +562,6 @@ export const Controller = class Controller {
             transcript: clean,
             answer: '',
             answerStreaming: true,
-            // ponytail: screen context is single-use; clear id so user can
-            // capture another screenshot in the same conversation.
             screenContext: {
                 ...this._state.screenContext,
                 id: null,
@@ -489,6 +569,10 @@ export const Controller = class Controller {
                 status: 'used',
             },
         });
+
+        if (this._state.conversationMode)
+            this._appendSessionMessage('user', clean, 'screen');
+
         this._send({
             type: 'submit_screen_question',
             context_id: contextId,
@@ -508,6 +592,12 @@ export const Controller = class Controller {
     toggleConversationMode() {
         if (this._state.safeMode) return;
         const enabled = !this._state.conversationMode;
+        this._setConversationMode(enabled);
+    }
+
+    setConversationMode(enabled) {
+        if (this._state.safeMode) return;
+        if (this._state.conversationMode === enabled) return;
         this._setState({conversationMode: enabled});
         try {
             this._settings.set_boolean('conversation-mode', enabled);
@@ -520,7 +610,140 @@ export const Controller = class Controller {
 
     clearConversation() {
         this._send({type: 'clear_conversation'});
+        this._setState({conversationTurnCount: 0, userText: '', transcript: '', answer: ''});
+    }
+
+    // ── Chat session management ──────────────────────
+
+    get chatSessions() {
+        return this._chatSessions;
+    }
+
+    _titleFromMessage(text) {
+        const clean = String(text ?? '').replace(/\s+/g, ' ').trim();
+        if (!clean)
+            return 'New chat';
+        return clean.length > 36 ? `${clean.slice(0, 35)}\u2026` : clean;
+    }
+
+    _generateId() {
+        return `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    }
+
+    _generateMsgId() {
+        return `m${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+    }
+
+    _ensureActiveSession() {
+        if (this._chatSessions.activeSessionId)
+            return;
+        const session = {
+            id: this._generateId(),
+            title: 'New chat',
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            messages: [],
+            compacted: false,
+        };
+        this._chatSessions.sessions.push(session);
+        this._chatSessions.activeSessionId = session.id;
+    }
+
+    _trimSessions() {
+        const {sessions, maxSessions} = this._chatSessions;
+        while (sessions.length > maxSessions) {
+            const activeId = this._chatSessions.activeSessionId;
+            const idx = sessions.findIndex(s => s.id !== activeId);
+            if (idx === -1)
+                break;
+            sessions.splice(idx, 1);
+        }
+    }
+
+    _getActiveSession() {
+        const {activeSessionId, sessions} = this._chatSessions;
+        return sessions.find(s => s.id === activeSessionId) || null;
+    }
+
+    newChatSession() {
+        this._ensureActiveSession();
+
+        const session = {
+            id: this._generateId(),
+            title: 'New chat',
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            messages: [],
+            compacted: false,
+        };
+        this._chatSessions.sessions.push(session);
+        this._chatSessions.activeSessionId = session.id;
+        this._trimSessions();
+
+        this.clearConversation();
         this._setState({conversationTurnCount: 0});
+        this._notify();
+    }
+
+    switchChatSession(sessionId) {
+        const {sessions} = this._chatSessions;
+        const target = sessions.find(s => s.id === sessionId);
+        if (!target)
+            return;
+
+        this._chatSessions.activeSessionId = sessionId;
+
+        this.clearConversation();
+        this._setState({conversationTurnCount: 0});
+        this._notify();
+    }
+
+    _appendSessionMessage(role, text, kind = 'text') {
+        this._ensureActiveSession();
+        const session = this._getActiveSession();
+        if (!session)
+            return;
+
+        session.messages.push({
+            id: this._generateMsgId(),
+            role,
+            text: text || '',
+            kind,
+            createdAt: Date.now(),
+        });
+        session.updatedAt = Date.now();
+
+        if (role === 'user' && session.messages.filter(m => m.role === 'user').length === 1)
+            session.title = this._titleFromMessage(text);
+
+        this._trimSessions();
+    }
+
+    removeChatSession(sessionId) {
+        const {sessions, activeSessionId} = this._chatSessions;
+        const idx = sessions.findIndex(s => s.id === sessionId);
+        if (idx === -1)
+            return;
+
+        sessions.splice(idx, 1);
+
+        if (activeSessionId === sessionId) {
+            if (sessions.length > 0)
+                this._chatSessions.activeSessionId = sessions[sessions.length - 1].id;
+            else
+                this._chatSessions.activeSessionId = null;
+        }
+    }
+
+    getActiveSessionMessages() {
+        const session = this._getActiveSession();
+        if (!session)
+            return [];
+        return session.messages.map(m => ({
+            role: m.role,
+            text: m.text,
+            isStreaming: false,
+        }));
     }
 
     requestCommandRun(command) {
@@ -624,7 +847,7 @@ export const Controller = class Controller {
             this._copyFeedbackTimer = null;
             if (this._state.copyFeedback === message)
                 this._setState({copyFeedback: ''});
-            return GLib.SOURCE_REMOVE;
+            return false;
         });
     }
 
@@ -641,6 +864,13 @@ export const Controller = class Controller {
             this._send({type: 'get_capabilities'});
             this._send({type: 'get_conversation_state'});
             this.syncRuntimeSettings();
+            // ponytail: start wake word if enabled in settings
+            if (safeGet(this._settings, 'get_boolean', 'wake-word-enabled', false)) {
+                GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+                    this._send({type: 'start_wake_word'});
+                    return false; // SOURCE_REMOVE
+                });
+            }
             if (this._pendingRecordOnReady) {
                 this._pendingRecordOnReady = false;
                 this._send({type: 'start_recording'});
@@ -702,6 +932,8 @@ export const Controller = class Controller {
                     partialTranscript: '',
                     processingMessage: '',
                 });
+                if (this._state.conversationMode && event.text)
+                    this._appendSessionMessage('user', event.text, 'voice');
                 break;
             case 'answer_start':
                 this._setState({
@@ -728,6 +960,8 @@ export const Controller = class Controller {
                         : State.ANSWERING,
                     answerStreaming: false,
                 });
+                if (this._state.conversationMode && this._state.answer)
+                    this._appendSessionMessage('assistant', this._state.answer, 'text');
                 this._playSound('answer-done');
                 break;
             case 'command_approval':
@@ -856,6 +1090,10 @@ export const Controller = class Controller {
                 });
                 break;
             case 'screen_context_ready':
+                if (this._screenCaptureTimeout) {
+                    GLib.source_remove(this._screenCaptureTimeout);
+                    this._screenCaptureTimeout = null;
+                }
                 this._setState({
                     status: State.SCREEN_READY,
                     screenContext: {
@@ -873,23 +1111,36 @@ export const Controller = class Controller {
                 break;
             case 'screen_context_error':
                 {
-                    const message = event.message || 'Ask about screen is unavailable.';
+                    if (this._screenCaptureTimeout) {
+                        GLib.source_remove(this._screenCaptureTimeout);
+                        this._screenCaptureTimeout = null;
+                    }
+                    const message = event.message || '';
                     const stage = event.stage || '';
-                    const scopeMsg = stage ? `${stage}: ${message}` : message;
-                    this._setState({
-                        status: State.ERROR,
-                        error: `Screen capture failed — ${scopeMsg}`,
-                        lastBackendError: message,
-                        screenContext: {
-                            ...this._state.screenContext,
-                            status: 'error',
-                            error: message,
-                        },
-                    });
-                    this._notifyError('Ask about screen', message);
-                    if (this._pendingScreenFlow) {
-                        this._pendingScreenFlow = null;
-                        this._openForScreenQuestion();
+                    const isCancelled =
+                        stage === 'capture' &&
+                        (message.toLowerCase().includes('cancelled') ||
+                         message.toLowerCase().includes('canceled'));
+
+                    if (isCancelled) {
+                        this._handleScreenCaptureCancelled();
+                    } else {
+                        const scopeMsg = stage ? `${stage}: ${message}` : message;
+                        this._setState({
+                            status: State.ERROR,
+                            error: `Screen capture failed — ${scopeMsg}`,
+                            lastBackendError: message,
+                            screenContext: {
+                                ...this._state.screenContext,
+                                status: 'error',
+                                error: message,
+                            },
+                        });
+                        this._notifyError('Ask about screen', message);
+                        if (this._pendingScreenFlow) {
+                            this._pendingScreenFlow = null;
+                            this._openForScreenQuestion();
+                        }
                     }
                 }
                 break;
@@ -906,6 +1157,56 @@ export const Controller = class Controller {
             case 'audio_input_test_level':
             case 'audio_input_test_stopped':
             case 'audio_input_test_error':
+                break;
+            case 'wake_listening':
+                this._setState({wakeListening: true, wakeModel: event.model || ''});
+                break;
+            case 'wake_detected':
+                this._setState({wakeListening: true});
+                this._handleWakeDetected();
+                break;
+            case 'wake_stopped':
+                this._setState({wakeListening: false, wakeModel: ''});
+                break;
+            case 'goal_started':
+                this._setState({
+                    goalActive: true,
+                    goalText: event.goal || '',
+                    goalProgress: [],
+                    goalIterations: 0,
+                });
+                break;
+            case 'goal_progress':
+                this._setState({
+                    goalPhase: event.phase || '',
+                    goalDetail: event.detail || '',
+                    goalIterations: event.iteration || 0,
+                });
+                break;
+            case 'goal_tool':
+                {
+                    const tools = [...(this._state.goalProgress || [])];
+                    tools.push({
+                        tool: event.tool || '',
+                        success: !!event.success,
+                        output: event.output || '',
+                    });
+                    this._setState({goalProgress: tools});
+                }
+                break;
+            case 'goal_finished':
+                this._setState({
+                    goalActive: false,
+                    goalPhase: '',
+                    goalDetail: '',
+                });
+                break;
+            case 'goal_confirmation':
+                this._setState({
+                    goalConfirmQuestion: event.question || '',
+                    goalConfirmTool: event.pending_tool || '',
+                    goalConfirmArgs: event.pending_args || '',
+                });
                 break;
         }
     }
@@ -988,6 +1289,66 @@ export const Controller = class Controller {
             silenceMs: Math.max(0, event.silence_ms || 0),
             lastVoiceActivity,
         });
+    }
+
+    _handleScreenCaptureCancelled() {
+        this._restorePreScreenCaptureState();
+
+        this._setTransientNotice('Screenshot cancelled');
+
+        this._setState({
+            screenContext: {
+                ...this._state.screenContext,
+                activeContextId: null,
+                pendingQuestion: false,
+                error: null,
+            },
+        });
+
+        if (this._pendingScreenFlow) {
+            this._pendingScreenFlow = null;
+        }
+
+        GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+            if (this._popupHandler?.focusInput)
+                this._popupHandler.focusInput();
+            return false;
+        });
+    }
+
+    _restorePreScreenCaptureState() {
+        const prev = this._preScreenCaptureState;
+        if (!prev) {
+            this._resetToIdle();
+            return;
+        }
+
+        const patch = {
+            status: prev.status,
+            inputText: prev.inputText,
+            conversationMode: prev.conversationMode,
+            screenContext: prev.screenContext,
+        };
+
+        if (prev.status === State.IDLE)
+            this._resetToIdle();
+        else
+            this._setState(patch);
+
+        this._preScreenCaptureState = null;
+    }
+
+    _setTransientNotice(message) {
+        this._setState({ copyFeedback: message });
+        if (this._transientNoticeTimer)
+            GLib.source_remove(this._transientNoticeTimer);
+        this._transientNoticeTimer = GLib.timeout_add(
+            GLib.PRIORITY_DEFAULT, 3000, () => {
+                this._transientNoticeTimer = null;
+                if (this._state.copyFeedback === message)
+                    this._setState({ copyFeedback: '' });
+                return false;
+            });
     }
 
     _resetToIdle() {
@@ -1127,6 +1488,14 @@ export const Controller = class Controller {
         if (this._copyFeedbackTimer) {
             GLib.source_remove(this._copyFeedbackTimer);
             this._copyFeedbackTimer = null;
+        }
+        if (this._transientNoticeTimer) {
+            GLib.source_remove(this._transientNoticeTimer);
+            this._transientNoticeTimer = null;
+        }
+        if (this._screenCaptureTimeout) {
+            GLib.source_remove(this._screenCaptureTimeout);
+            this._screenCaptureTimeout = null;
         }
         this.disconnect();
         this._listeners.clear();

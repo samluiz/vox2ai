@@ -4,4 +4,5 @@ export const FEATURE_FLAGS = {
     screenContext: true,
     thinkingIndicator: true,
     scrollableAnswers: true,
+    wakeWord: true,
 };

@@ -11,6 +11,8 @@ import {
     parseMarkdown,
 } from '../markdown/parseMarkdown.js';
 
+import { extractParagraphCommands } from '../markdown/extractCommands.js';
+
 function vbox(spacing = 0, styleClass = '') {
     return new St.Widget({
         layout_manager: new Clutter.BoxLayout({
@@ -67,15 +69,28 @@ function button(label, cb, flashLabel = 'Copied') {
                 try {
                     actor.label = original;
                 } catch (e) {
-                    // The answer may have re-rendered while streaming.
                 }
-                return GLib.SOURCE_REMOVE;
+                return false;
             });
         } catch (e) {
             log(`[vox2ai] code copy error: ${e}`);
         }
     });
     return actor;
+}
+
+function renderCommandChip(command, onCopy) {
+    const chip = hbox(6, 'vox2ai-command-chip');
+
+    const cmdLabel = plainLabel(String(command || ''), 'vox2ai-command-chip-text', Pango.WrapMode.CHAR);
+    chip.add_child(cmdLabel);
+
+    chip.add_child(new St.Widget({x_expand: true}));
+
+    const copyBtn = button('Copy', () => onCopy(command, 'Command copied'), 'Copied');
+    chip.add_child(copyBtn);
+
+    return chip;
 }
 
 export function renderMarkdown(parent, markdown, options = {}) {
@@ -109,7 +124,7 @@ export function renderMarkdown(parent, markdown, options = {}) {
             } else if (block.type === 'list') {
                 parent.add_child(renderList(block));
             } else if (block.type === 'paragraph') {
-                if (looksLikeCommand(block.text))
+                if (looksLikeCommand(block.text)) {
                     parent.add_child(renderCodeBlock(
                         'bash',
                         block.text,
@@ -117,8 +132,12 @@ export function renderMarkdown(parent, markdown, options = {}) {
                         onExplainCommand,
                         onRunCommand
                     ));
-                else
+                } else {
                     parent.add_child(markupLabel(inlineToMarkup(block.text), 'vox2ai-markdown-paragraph'));
+                    const inlineCmds = extractParagraphCommands(block.text);
+                    for (const cmd of inlineCmds)
+                        parent.add_child(renderCommandChip(cmd, onCopy));
+                }
             }
         } catch (e) {
             log(`[vox2ai] markdown block render error: ${e}`);

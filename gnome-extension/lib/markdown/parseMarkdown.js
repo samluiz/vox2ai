@@ -149,9 +149,34 @@ export function isCommandLanguage(language) {
     ].includes(lang);
 }
 
+const COMMAND_PREFIXES = [
+    "sudo", "systemctl", "journalctl", "dmesg", "cat", "grep", "rg",
+    "find", "ls", "cd", "mkdir", "rm", "cp", "mv", "chmod", "chown",
+    "dnf", "apt", "flatpak", "gsettings", "gnome-extensions",
+    "glib-compile-schemas", "python", "python3", "pip", "uv", "cargo",
+    "git", "docker", "podman", "kubectl", "psql", "make", "npm", "pnpm",
+    "yarn", "curl", "wget", "tar", "gzip", "unzip", "ssh", "scp",
+    "rsync", "ping", "traceroute", "ip", "nmcli", "ps", "kill", "top",
+    "htop", "df", "du", "mount", "umount", "ln", "touch", "head", "tail",
+    "less", "sort", "uniq", "wc", "tr", "cut", "awk", "sed", "tee",
+    "env", "export", "source", "which", "whereis",
+];
+
+const SHELL_OPS = /[|&;><]/;
+
 export function looksLikeCommand(text) {
     const clean = String(text || '').trim();
     if (!clean || clean.includes('\n') || clean.length > 160)
         return false;
-    return /^(sudo\s+|dnf\s+|apt\s+|npm\s+|pnpm\s+|yarn\s+|python\s+|pip\s+|uv\s+|cargo\s+|git\s+|systemctl\s+|journalctl\s+|docker\s+|podman\s+|kubectl\s+|make\s+)/.test(clean);
+
+    if (SHELL_OPS.test(clean))
+        return true;
+
+    const lower = clean.toLowerCase();
+    for (const prefix of COMMAND_PREFIXES) {
+        if (lower.startsWith(prefix + ' ')) return true;
+        if (lower === prefix) return true;
+    }
+
+    return false;
 }

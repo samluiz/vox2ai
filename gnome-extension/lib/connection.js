@@ -131,7 +131,7 @@ export const Connection = class Connection {
             GLib.PRIORITY_DEFAULT, delay, () => {
                 this._reconnectTimer = null;
                 this.connect();
-                return GLib.SOURCE_REMOVE;
+                return false;
             }
         );
     }

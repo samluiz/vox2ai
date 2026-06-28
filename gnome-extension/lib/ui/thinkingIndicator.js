@@ -27,7 +27,7 @@ export class ThinkingIndicator {
     this._step = 0;
     this._label.set_text(this._baseText);
     this._tickId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 350, () => {
-      if (this._destroyed) return GLib.SOURCE_REMOVE;
+      if (this._destroyed) return false;
       this._step = (this._step + 1) % 4;
       this._label.set_text(`${this._baseText}${".".repeat(this._step)}`);
       return GLib.SOURCE_CONTINUE;

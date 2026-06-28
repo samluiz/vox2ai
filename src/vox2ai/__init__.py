@@ -35,7 +35,7 @@ from vox2ai.errors import (
     TranscriptionError,
     Vox2AIError,
 )
-from vox2ai.prompts import ASSISTANT_SYSTEM_PROMPT
+from vox2ai.prompts import ASSISTANT_SYSTEM_PROMPT, PLANNER_SYSTEM_PROMPT, SYSTEM_PROMPT
 from vox2ai.timing import Timer
 from vox2ai.transcript import (
     TranscriptCandidate,
@@ -72,6 +72,8 @@ __all__ = [
     "load_config",
     "save_config",
     "ASSISTANT_SYSTEM_PROMPT",
+    "SYSTEM_PROMPT",
+    "PLANNER_SYSTEM_PROMPT",
     "AgentDecision",
     "parse_agent_decision",
     "CommandResult",

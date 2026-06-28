@@ -2,25 +2,28 @@
 
 **vox2ai** is a GNOME-native Linux voice/text AI assistant for Fedora/GNOME/Wayland.
 
-The active desktop architecture is:
+Architecture:
 
 - GNOME Shell extension UI
-- local Python backend service
+- local Python WebSocket backend (`ws://127.0.0.1:8765`)
 - `systemd --user` backend lifecycle
-- local WebSocket connection at `127.0.0.1:8765`
+- modular agent with tool execution, wake word detection, chat sessions
 
-Tauri/React code may still exist in the repository as legacy/experimental code, but it is not the active desktop product path.
+Tauri/React code has been removed. GNOME Shell extension is the only desktop frontend.
 
 ## What Works
 
 - Type a prompt from the GNOME popup.
-- Record a voice prompt with `Ctrl+Space`.
+- Record a voice prompt with `Ctrl+Space` or tap the red dot.
 - Auto-stop voice recording after speech ends.
 - Show a real microphone level waveform while recording.
 - Calibrate microphone sensitivity in Preferences.
-- Keep optional current-session conversation context.
+- Keep optional current-session conversation context with chat message history.
 - Ask about the current screen using a vision-capable model or OCR fallback.
 - Approve shell commands before they run.
+- Wake word ("hey jarvis") triggers recording hands-free.
+- Goal mode: describe a multi-step objective, agent executes autonomously with tools.
+- Chat sessions: multi-turn conversations with session management and scrollable history.
 
 vox2ai does not record continuously. Microphone and screen capture are only used after an explicit user action.
 
@@ -62,17 +65,46 @@ On GNOME Wayland, log out and back in after installing or changing extension Jav
 Open the GNOME panel indicator.
 
 - Type a prompt and press Enter.
-- Press `Ctrl+Space` to start recording.
+- Press `Ctrl+Space` or tap the red dot to start recording.
 - Press `Ctrl+Space` again to stop manually, or stop speaking and let auto-stop send it.
 - Use Preferences -> Voice -> Test microphone to calibrate sensitivity.
 - Enable Conversation mode when you want follow-up questions to use recent context.
-- Use Ask about screen only when you explicitly want vox2ai to capture the visible screen.
+- Use the camera button to capture and ask about the visible screen.
+- Switch between Ask, Goal, and Chat modes from the mode selector (top-left).
+- Goal mode: type a task ("organize my downloads folder"), agent plans and runs tools.
+- Chat sessions: multi-turn history with scrollback and session switching.
+
+## Wake Word
+
+Enable wake word detection in Preferences:
+
+```toml
+[wake_word]
+enabled = true
+model = "hey_jarvis"
+threshold = 0.5
+activation_sound = true
+```
+
+When the wake word is spoken, vox2ai opens the popup and starts recording. Wake listening pauses during recording and resumes afterward.
+
+## Goal Mode
+
+Goal mode lets you describe a multi-step objective. The agent:
+
+1. Generates a plan using the LLM.
+2. Executes tools (shell commands, file ops, git, clipboard, system info).
+3. Reports progress and tool results.
+4. Asks for confirmation before running potentially destructive commands.
+5. Returns a final answer.
+
+Tool safety rules still apply — blocked commands are always rejected, high-risk commands require approval.
 
 ## Ask About Screen
 
 Ask about screen uses this order:
 
-1. Capture a screenshot after explicit user action.
+1. Capture a screenshot after explicit user action (camera button).
 2. If the active model is marked vision-capable, send the screenshot to that model.
 3. Otherwise, run OCR with `tesseract` and send the extracted text to the text model.
 
@@ -86,10 +118,11 @@ Screenshots are temporary by default and are deleted after the request. Debug sc
 
 ## Preferences
 
-The GNOME preferences window is intentionally small:
+The GNOME preferences window:
 
 - **General**: backend autostart, shortcut behavior, conversation mode, notifications.
 - **Voice**: input device, live microphone test, auto-stop, silence duration, sensitivity, language, Whisper model.
+- **Wake Word**: enable/disable, model selection, threshold, activation sound.
 - **Screen**: Ask about screen availability, OCR/vision status, test capture, optional screen shortcut.
 - **AI**: provider, base URL, model, API key status, test connection, open config.
 - **Diagnostics**: backend capabilities and last errors.
@@ -180,6 +213,9 @@ Then test:
 6. Ask about screen through vision or OCR.
 7. `Ctrl+Space` starts/stops recording.
 8. Diagnostics accurately reports unavailable features.
+9. Wake word detection triggers recording.
+10. Goal mode plans and executes a multi-step task.
+11. Chat sessions scroll and switch correctly.
 
 ## CLI
 
@@ -215,4 +251,23 @@ Create or overwrite defaults:
 ```bash
 vox2ai init
 vox2ai init --force
+```
+
+## Backend Architecture
+
+```
+src/vox2ai/
+  agent/          Goal-oriented autonomous agent (loop, planner, executor, sanitizer, tool registry, working memory)
+  commands.py     Shell command safety rules (blocked patterns, ask-before-run approval)
+  config.py        Pydantic config model with WakeWordConfig, RecordingConfig, etc.
+  context/        Context aggregation (screen, clipboard, files, vocabulary)
+  desktop_protocol.py  WebSocket wire types (events, commands, parsing)
+  desktop_server.py    Async WebSocket controller (recording, STT, LLM, wake, goal)
+  llm.py          OpenAI-compatible LLM client
+  prompts/        LLM prompt architecture (system, developer, planner, tool result)
+  providers.py    LLM provider adapters (OpenAI, Groq, OpenRouter, etc.)
+  recorder.py     Streaming microphone recorder with VAD
+  stt/            Speech-to-text backends (Whisper, etc.)
+  tools/          Agent tools (clipboard, filesystem, git, run_command, system)
+  wake/           Wake word detection (porcupine listener, detector, manager)
 ```

@@ -14,7 +14,7 @@ export class ScrollableAnswerArea {
 
         this._scrollView = new St.ScrollView({
             style_class: 'vox2ai-answer-scroll',
-            overlay_scrollbars: true,
+            overlay_scrollbars: false,
             x_expand: true,
             y_expand: true,
         });
@@ -45,15 +45,15 @@ export class ScrollableAnswerArea {
             try {
                 const vscroll = this._scrollView.get_vscroll_bar();
                 if (!vscroll)
-                    return GLib.SOURCE_REMOVE;
+                    return false;
                 const adj = vscroll.get_adjustment();
                 if (!adj)
-                    return GLib.SOURCE_REMOVE;
+                    return false;
                 adj.set_value(adj.get_upper() - adj.get_page_size());
             } catch (e) {
                 logError(e, '[vox2ai] scroll error');
             }
-            return GLib.SOURCE_REMOVE;
+            return false;
         });
     }
 

@@ -57,6 +57,12 @@ def build_capabilities(
                 "reason": None if ocr_available else ocr["reason"],
             },
             "commands": {"available": config.commands.mode != "disabled"},
+            "wake_word": {
+                "available": True,
+                "enabled": config.wake_word.enabled,
+                "model": config.wake_word.model,
+                "threshold": config.wake_word.threshold,
+            },
         },
         "audio": {
             "input_available": audio_available,

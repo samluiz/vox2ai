@@ -101,9 +101,10 @@ export default class Vox2aiExtension extends Extension {
             log(`[vox2ai] backend connect error: ${e}`);
         }
 
-        // Keybinding — only vox2ai-activate
+        // Keybinding — experimental, disabled by default
         try {
-            this._registerKeybinding('vox2ai-activate', () => this._activate());
+            if (safeGet(this._settings, 'get_boolean', 'keyboard-shortcut-enabled', false))
+                this._registerKeybinding('vox2ai-activate', () => this._activate());
         } catch (e) {
             log(`[vox2ai] keybinding error: ${e}`);
         }
@@ -128,6 +129,10 @@ export default class Vox2aiExtension extends Extension {
             'conversation-mode',
             'screen-context-enabled',
             'ask-screen-shortcut-enabled',
+            'keyboard-shortcut-enabled',
+            'wake-word-enabled',
+            'wake-word-model',
+            'wake-word-threshold',
         ]) {
             const id = connectSetting(this._settings, key, () => {
                 if (this._controller)

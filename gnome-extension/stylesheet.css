@@ -27,11 +27,20 @@
 
 .vox2ai-item {
   padding: 0;
+  background-color: transparent;
+}
+
+.vox2ai-item:hover {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+.vox2ai-item:selected {
+  background-color: rgba(255, 255, 255, 0.02);
 }
 
 .vox2ai-shell {
-  min-width: 360px;
-  max-height: 720px;
+  min-width: 440px;
+  max-height: 760px;
 }
 
 .vox2ai-scroll {
@@ -40,7 +49,7 @@
 
 .vox2ai-answer-scroll {
   max-height: 420px;
-  min-height: 120px;
+  min-height: 0;
 }
 
 .vox2ai-answer-content {
@@ -48,46 +57,138 @@
 }
 
 .vox2ai-header {
-  padding: 12px 14px 4px;
+  padding: 8px 14px 2px;
+  spacing: 6px;
 }
 
-.vox2ai-title {
+.vox2ai-pill-button {
+  border-radius: 8px;
+  padding: 4px 9px;
+  min-height: 26px;
+}
+
+.vox2ai-pill-button:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.vox2ai-pill-label {
+  font-size: 11px;
   font-weight: 600;
-  font-size: 13px;
   color: rgba(255, 255, 255, 0.88);
 }
 
-.vox2ai-status {
-  font-size: 11px;
-  font-weight: 500;
+.vox2ai-overflow-button {
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 14px;
+  font-weight: 600;
   color: rgba(255, 255, 255, 0.5);
-  padding: 2px 8px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.06);
+  background: transparent;
+  min-width: 28px;
+  min-height: 24px;
 }
 
-.vox2ai-status-listening {
-  color: #0f0f0f;
-  background: #8b9cff;
-}
-
-.vox2ai-status-processing {
-  color: rgba(255, 255, 255, 0.75);
+.vox2ai-overflow-button:hover {
   background: rgba(255, 255, 255, 0.1);
-}
-
-.vox2ai-status-error {
-  color: #0f0f0f;
-  background: #ff5a64;
-}
-
-.vox2ai-status-disconnected {
-  color: rgba(255, 255, 255, 0.45);
-  background: rgba(255, 255, 255, 0.05);
+  color: rgba(255, 255, 255, 0.8);
 }
 
 .vox2ai-content {
-  padding: 10px 14px 8px;
+  padding: 6px 12px 4px;
+}
+
+.vox2ai-composer {
+  padding: 4px 14px 10px;
+  spacing: 6px;
+}
+
+.vox2ai-input-container {
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.08);
+  spacing: 4px;
+  x_expand: true;
+  padding: 0 6px;
+}
+
+.vox2ai-input-container:focus-within {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.vox2ai-prompt-input {
+  border-radius: 18px;
+  padding: 8px 8px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 12px;
+  min-height: 36px;
+  x_expand: true;
+  selection-background-color: #8b9cff;
+  selected-color: #0f0f0f;
+}
+
+.vox2ai-prompt-input:focus {
+  background: transparent;
+}
+
+.vox2ai-inline-send,
+.vox2ai-record-btn,
+.vox2ai-camera-btn {
+  min-width: 28px;
+  min-height: 28px;
+  border-radius: 14px;
+  padding: 0;
+  margin: 2px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.vox2ai-inline-send:hover,
+.vox2ai-record-btn:hover,
+.vox2ai-camera-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.vox2ai-inline-send .vox2ai-composer-btn-icon,
+.vox2ai-record-btn .vox2ai-composer-btn-icon,
+.vox2ai-camera-btn .vox2ai-composer-btn-icon {
+  icon-size: 16px;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.vox2ai-inline-send:hover .vox2ai-composer-btn-icon,
+.vox2ai-record-btn:hover .vox2ai-composer-btn-icon,
+.vox2ai-camera-btn:hover .vox2ai-composer-btn-icon {
+  color: rgba(255, 255, 255, 1);
+}
+
+.vox2ai-red-dot {
+  border-radius: 14px;
+  background: #ff5a64;
+  width: 12px;
+  height: 12px;
+  margin: auto;
+}
+
+.vox2ai-composer-btn-label {
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.vox2ai-utility-button {
+  border-radius: 999px;
+  padding: 4px 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.45);
+  background: transparent;
+  min-width: 24px;
+  min-height: 24px;
+}
+
+.vox2ai-utility-button:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.7);
 }
 
 .vox2ai-state-box {
@@ -298,9 +399,15 @@
   padding: 3px 0;
 }
 
-.vox2ai-risk-low { color: #4ade80; }
-.vox2ai-risk-medium { color: #facc15; }
-.vox2ai-risk-high { color: #ff5a64; }
+.vox2ai-risk-low {
+  color: #4ade80;
+}
+.vox2ai-risk-medium {
+  color: #facc15;
+}
+.vox2ai-risk-high {
+  color: #ff5a64;
+}
 
 .vox2ai-detail {
   font-size: 11px;
@@ -355,35 +462,47 @@
   background: rgba(255, 255, 255, 0.15);
 }
 
+/* ── Chat timeline ───────────────────────────── */
+
+.vox2ai-chat-timeline {
+  padding: 0;
+}
+
+.vox2ai-jump-latest-btn {
+  border-radius: 12px;
+  padding: 5px 11px;
+  margin: 6px auto;
+  font-size: 10px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.82);
+  background: rgba(139, 156, 255, 0.16);
+}
+
+.vox2ai-jump-latest-btn:hover {
+  background: rgba(139, 156, 255, 0.28);
+  color: rgba(255, 255, 255, 0.95);
+}
+
+/* ── Command chip ────────────────────────────── */
+
+.vox2ai-command-chip {
+  padding: 6px 8px;
+  margin: 4px 0;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.vox2ai-command-chip-text {
+  font-family: monospace;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.86);
+}
+
 /* ── Error ────────────────────────────────────────── */
 
 .vox2ai-error {
   font-size: 12px;
   color: #ff8a8a;
   padding: 4px 0;
-}
-
-/* ── Footer ───────────────────────────────────────── */
-
-.vox2ai-actions {
-  padding: 6px 14px 10px;
-}
-
-.vox2ai-footer-link {
-  padding: 4px 6px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 500;
-  color: rgba(255, 255, 255, 0.45);
-  background: transparent;
-}
-
-.vox2ai-footer-link:hover {
-  color: rgba(255, 255, 255, 0.75);
-  background: rgba(255, 255, 255, 0.06);
-}
-
-.vox2ai-footer-sep {
-  font-size: 10px;
-  color: rgba(255, 255, 255, 0.25);
 }

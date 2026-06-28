@@ -10,7 +10,12 @@
       <description>Disable all advanced features. Only panel indicator, basic popup, backend status, typed prompt, and voice start/stop/cancel.</description>
     </key>
 
-    <!-- Global shortcut keybinding -->
+    <!-- Global shortcut keybinding (Experimental — disabled by default) -->
+    <key name="keyboard-shortcut-enabled" type="b">
+      <default>false</default>
+      <summary>Keyboard shortcut enabled</summary>
+      <description>Enable the global keyboard shortcut for activation. Experimental — wake word is the primary UX.</description>
+    </key>
     <key name="vox2ai-activate" type="as">
       <default><![CDATA[["<Control>space"]]]></default>
       <summary>Activate vox2ai</summary>
@@ -180,6 +185,24 @@
       <default>false</default>
       <summary>Save screenshots for debug</summary>
       <description>Keep captured screenshots for debugging. Off by default.</description>
+    </key>
+
+    <!-- Wake word -->
+    <key name="wake-word-enabled" type="b">
+      <default>false</default>
+      <summary>Wake word detection enabled</summary>
+      <description>Enable passive wake word detection to activate the assistant by voice.</description>
+    </key>
+    <key name="wake-word-model" type="s">
+      <default>"hey_jarvis"</default>
+      <summary>Wake word model</summary>
+      <description>OpenWakeWord model to use for detection.</description>
+    </key>
+    <key name="wake-word-threshold" type="d">
+      <default>0.5</default>
+      <summary>Wake word sensitivity</summary>
+      <description>Confidence threshold for wake word detection (0.1-0.99).</description>
+      <range min="0.1" max="0.99"/>
     </key>
 
   </schema>

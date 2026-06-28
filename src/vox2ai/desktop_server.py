@@ -14,6 +14,9 @@ from pathlib import Path
 from typing import Any, Literal
 
 from vox2ai.agent import AgentDecision, parse_agent_decision
+from vox2ai.agent.loop import AgentLoop
+from vox2ai.agent.sanitizer import sanitize_answer, sanitize_chunk
+from vox2ai.agent.tool_registry import ToolRegistry
 from vox2ai.audio_test import AudioInputTestSession
 from vox2ai.capabilities import build_capabilities
 from vox2ai.commands import (
@@ -50,6 +53,10 @@ from vox2ai.desktop_protocol import (
     DiagnosticsEvent,
     ErrorEvent,
     ExplainCommandCommand,
+    GoalFinishedEvent,
+    GoalProgressEvent,
+    GoalStartedEvent,
+    GoalToolEvent,
     HelloEvent,
     ListProviderModelsCommand,
     ModelProfileSetEvent,
@@ -74,6 +81,7 @@ from vox2ai.desktop_protocol import (
     SettingsEvent,
     SettingsSavedEvent,
     StateEvent,
+    SubmitGoalCommand,
     SubmitScreenQuestionCommand,
     SubmitTextPromptCommand,
     TestProviderCommand,
@@ -82,13 +90,16 @@ from vox2ai.desktop_protocol import (
     UpdateSettingsCommand,
     UpdateVoiceSettingsCommand,
     VoiceActivityEvent,
+    WakeDetectedEvent,
+    WakeListeningEvent,
+    WakeStoppedEvent,
     parse_command,
     serialize_event,
 )
 from vox2ai.errors import AudioError, Vox2AIError
 from vox2ai.llm import LLMClient
 from vox2ai.partial_transcriber import LocalPartialTranscriber, PartialTranscript
-from vox2ai.prompts import COMMAND_AGENT_SYSTEM_PROMPT, COMMAND_RESULT_PROMPT
+from vox2ai.prompts import SYSTEM_PROMPT, TOOL_RESULT_PROMPT
 from vox2ai.providers import create_adapter
 from vox2ai.recorder import StreamingRecorder
 from vox2ai.screen_context import (
@@ -105,6 +116,7 @@ from vox2ai.stt import transcribe_audio
 from vox2ai.timing import Timer
 from vox2ai.transcript import build_initial_prompt
 from vox2ai.vocabulary import build_vocabulary_context
+from vox2ai.wake.manager import WakeManager
 
 
 class ServerState(Enum):
@@ -166,6 +178,10 @@ class DesktopController:
         self._last_audio_error: str | None = None
         self._audio_test: AudioInputTestSession | None = None
         self._llm_client = LLMClient(self._active_assistant_config())
+        self._wake_manager: WakeManager | None = None
+        self._tool_registry = ToolRegistry()
+        self._tool_registry.discover()
+        self._agent_loop: AgentLoop | None = None
 
     def set_broadcast(
         self, fn: Callable[[BackendEvent], None], loop: asyncio.AbstractEventLoop
@@ -500,6 +516,9 @@ class DesktopController:
             "open_logs": self._handle_open_logs,
             "open_config_folder": self._handle_open_config_folder,
             "reset_settings": self._handle_reset_settings,
+            "start_wake_word": self._handle_start_wake_word,
+            "stop_wake_word": self._handle_stop_wake_word,
+            "submit_goal": self._handle_submit_goal,
             "ping": None,
         }
         handler = handlers.get(cmd.type)
@@ -1120,6 +1139,14 @@ class DesktopController:
             if "conversation" in patch:
                 self._conversation.set_enabled(updated.conversation.enabled)
                 self._conversation.set_max_turns(_conversation_max_turns(updated))
+            if "wake_word" in patch:
+                if updated.wake_word.enabled and not self._wake_manager:
+                    self._start_wake_engine()
+                elif not updated.wake_word.enabled and self._wake_manager:
+                    self._stop_wake_engine()
+                    self._send(WakeStoppedEvent())
+                elif self._wake_manager:
+                    self._wake_manager.set_threshold(updated.wake_word.threshold)
             sanitized = sanitize_config(updated)
             sanitized["needs_setup"] = needs_setup(updated)
             self._send(SettingsSavedEvent(settings=sanitized))
@@ -1198,6 +1225,146 @@ class DesktopController:
         self._config = load_config()
         sanitized = sanitize_config(self._config)
         self._send(SettingsSavedEvent(settings=sanitized))
+
+    # ── Wake word handlers ─────────────────────────────────────
+
+    async def _handle_start_wake_word(self) -> None:
+        if not self._config.wake_word.enabled:
+            self._send(ErrorEvent(message="Wake word detection is disabled"))
+            return
+        if self._wake_manager is not None and self._wake_manager.is_running:
+            return
+        self._start_wake_engine()
+
+    async def _handle_stop_wake_word(self) -> None:
+        self._stop_wake_engine()
+        self._send(WakeStoppedEvent())
+
+    def _start_wake_engine(self) -> None:
+        if self._wake_manager is not None:
+            self._wake_manager.stop()
+        cfg = self._config.wake_word
+        self._wake_manager = WakeManager(
+            on_wake=self._on_wake_detected,
+            model_name=cfg.model,
+            threshold=cfg.threshold,
+            device=self._config.voice.input_device,
+        )
+        try:
+            self._wake_manager.start()
+            self._send(WakeListeningEvent(model=cfg.model, threshold=cfg.threshold))
+        except Exception as exc:
+            self._send(ErrorEvent(message=f"Wake engine failed to start: {exc}"))
+
+    def _stop_wake_engine(self) -> None:
+        if self._wake_manager is not None:
+            self._wake_manager.stop()
+            self._wake_manager = None
+
+    def _on_wake_detected(self) -> None:
+        """Called from wake manager thread when wake word is detected."""
+        if self._loop is None:
+            return
+        self._loop.call_soon_threadsafe(self._handle_wake_detected)
+
+    def _handle_wake_detected(self) -> None:
+        """Handle wake detection on the event loop."""
+        if self._state in _STATES_DISALLOWING_RECORD:
+            return
+        # Pause wake listener during recording
+        if self._wake_manager:
+            self._wake_manager.pause()
+        self._send(WakeDetectedEvent(model=self._config.wake_word.model))
+        # Trigger existing recording flow
+        self._handle_start_recording_sync()
+
+    def _handle_start_recording_sync(self) -> None:
+        """Start recording (sync wrapper for wake callback)."""
+        if self._state in _STATES_DISALLOWING_RECORD:
+            return
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(
+                lambda: asyncio.ensure_future(self._handle_start_recording())
+            )
+
+    def _resume_wake_after_recording(self) -> None:
+        """Resume wake listener if enabled."""
+        if self._config.wake_word.enabled and self._wake_manager:
+            self._wake_manager.resume()
+            self._send(WakeListeningEvent(
+                model=self._config.wake_word.model,
+                threshold=self._config.wake_word.threshold,
+            ))
+
+    # ── Goal mode ──────────────────────────────────────────────
+
+    async def _handle_submit_goal(self) -> None:
+        """Handle a goal-oriented autonomous task."""
+        cmd = self._last_cmd
+        if not isinstance(cmd, SubmitGoalCommand):
+            return
+        goal = cmd.goal.strip()
+        if not goal:
+            self._send(ErrorEvent(message="Empty goal"))
+            return
+
+        if self._state in _STATES_DISALLOWING_RECORD:
+            self._send(ErrorEvent(message="Busy — finish current request first"))
+            return
+
+        self._operation_generation += 1
+        generation = self._operation_generation
+        self._state = ServerState.THINKING
+
+        self._send(GoalStartedEvent(goal=goal))
+        self._send_state("thinking", "Planning...")
+
+        # Build agent loop with event callbacks
+        loop = AgentLoop(
+            llm_client=self._llm_client,
+            tool_registry=self._tool_registry,
+            max_iterations=10,
+            on_thinking=lambda text: self._send(
+                GoalProgressEvent(phase="thinking", detail=text)
+            ),
+            on_tool_start=lambda tool, args: self._send(
+                GoalToolEvent(tool=tool, args=str(args))
+            ),
+            on_tool_finish=lambda tool, ok, out: self._send(
+                GoalToolEvent(tool=tool, success=ok, output=out[:500])
+            ),
+            on_answer=lambda ans, _conf: self._send(
+                GoalProgressEvent(phase="answer", detail=ans[:200])
+            ),
+            on_progress=lambda text: self._send(
+                GoalProgressEvent(phase="progress", detail=text)
+            ),
+        )
+        self._agent_loop = loop
+
+        context = cmd.context or ""
+        try:
+            raw_answer = await loop.run(goal, context=context)
+            answer = sanitize_answer(raw_answer)
+        except Exception:
+            answer = "I encountered an internal error while processing this goal."
+        finally:
+            self._agent_loop = None
+
+        if generation != self._operation_generation:
+            return
+
+        n_tools = len(loop._memory.executed_tools) if hasattr(loop, '_memory') else 0
+        self._send(GoalFinishedEvent(
+            answer=answer,
+            iterations=n_tools,
+            tools_used=n_tools,
+        ))
+
+        # Stream the answer
+        self._state = ServerState.STREAMING_ANSWER
+        self._send(AnswerStartEvent())
+        await self._stream_text(answer, generation)
 
     async def _process_user_prompt(
         self,
@@ -1345,16 +1512,19 @@ class DesktopController:
         await self._stream_text(explanation, generation)
 
     async def _stream_text(self, text: str, generation: int) -> None:
+        clean = sanitize_answer(text)
         chunk_size = 60
-        for i in range(0, len(text), chunk_size):
+        for i in range(0, len(clean), chunk_size):
             if generation != self._operation_generation:
                 return
-            self._send(AnswerDeltaEvent(text=text[i : i + chunk_size]))
+            chunk = sanitize_chunk(clean[i : i + chunk_size])
+            if chunk:
+                self._send(AnswerDeltaEvent(text=chunk))
             await asyncio.sleep(0.015)
         if generation != self._operation_generation:
             return
         self._send(AnswerDoneEvent())
-        self._append_conversation("assistant", text)
+        self._append_conversation("assistant", clean)
         self._send(self._conversation_state_event())
         self._done_out(generation)
 
@@ -1382,11 +1552,13 @@ class DesktopController:
             spans = sorted(self._timer._spans.items())
             items = [{"name": k, "ms": round(v * 1000, 1)} for k, v in spans]
             self._send(TimingEvent(items=items))
+        self._resume_wake_after_recording()
 
     def _error_out(self, message: str) -> None:
         self._state = ServerState.ERROR
         self._send(ErrorEvent(message=message))
         self._send_state("ready", "Ready")
+        self._resume_wake_after_recording()
 
 
 def _format_prompt_context(context: dict[str, Any], max_clipboard_chars: int) -> str:
@@ -1533,7 +1705,7 @@ def _do_transcription(path: Path, config: AppConfig) -> str | Vox2AIError:
 
 def _do_decision(llm: LLMClient, transcript: str) -> AgentDecision | Vox2AIError:
     try:
-        raw = llm.complete(COMMAND_AGENT_SYSTEM_PROMPT, transcript)
+        raw = llm.complete(SYSTEM_PROMPT, transcript)
         return parse_agent_decision(raw)
     except Vox2AIError as e:
         return e
@@ -1628,14 +1800,17 @@ def _do_command_explanation(
     llm: LLMClient, decision: AgentDecision, result: CommandResult
 ) -> str | Vox2AIError:
     try:
-        prompt = COMMAND_RESULT_PROMPT.format(
-            original_prompt=decision.message,
-            command=result.command,
-            exit_code=result.exit_code,
-            stdout=result.stdout,
-            stderr=result.stderr,
+        result_text = f"exit code: {result.exit_code}\n"
+        if result.stdout:
+            result_text += f"stdout:\n{result.stdout}\n"
+        if result.stderr:
+            result_text += f"stderr:\n{result.stderr}"
+        prompt = TOOL_RESULT_PROMPT.format(
+            goal=decision.message,
+            tool=f"run_command({result.command})",
+            result=result_text,
         )
-        return llm.complete("You are vox2ai, a Linux assistant.", prompt)
+        return llm.complete(SYSTEM_PROMPT, prompt)
     except Vox2AIError as e:
         return e
 
@@ -1708,10 +1883,17 @@ class DesktopServer:
         def _broadcast(event: BackendEvent) -> None:
             asyncio.run_coroutine_threadsafe(self._send_event(websocket, event), loop)
 
+        # ponytail: reset controller state for new connection
         self._controller.set_broadcast(_broadcast, loop)
+        if self._controller._state != ServerState.READY:
+            self._controller._state = ServerState.READY
         self._controller._send(HelloEvent())
         self._controller._send(BackendStatusEvent(status="connected", message="Ready"))
         self._controller._send_state("ready", "Ready")
+
+        # ponytail: auto-start wake engine if enabled
+        if self._controller._config.wake_word.enabled:
+            self._controller._start_wake_engine()
 
         try:
             async for raw in websocket:
@@ -1842,6 +2024,11 @@ def _apply_settings_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig
         for k, v in patch["notifications"].items():
             if hasattr(updated.notifications, k):
                 setattr(updated.notifications, k, v)
+
+    if "wake_word" in patch:
+        for k, v in patch["wake_word"].items():
+            if hasattr(updated.wake_word, k):
+                setattr(updated.wake_word, k, v)
 
     if "terminal" in patch:
         for k, v in patch["terminal"].items():

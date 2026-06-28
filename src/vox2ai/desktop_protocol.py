@@ -293,6 +293,64 @@ class ScreenContextErrorEvent:
     method: str = ""
 
 
+@dataclass
+class WakeListeningEvent:
+    type: Literal["wake_listening"] = "wake_listening"
+    model: str = ""
+    threshold: float = 0.0
+
+
+@dataclass
+class WakeDetectedEvent:
+    type: Literal["wake_detected"] = "wake_detected"
+    model: str = ""
+
+
+@dataclass
+class WakeStoppedEvent:
+    type: Literal["wake_stopped"] = "wake_stopped"
+
+
+@dataclass
+class GoalStartedEvent:
+    type: Literal["goal_started"] = "goal_started"
+    goal: str = ""
+
+
+@dataclass
+class GoalProgressEvent:
+    type: Literal["goal_progress"] = "goal_progress"
+    iteration: int = 0
+    max_iterations: int = 10
+    phase: str = ""  # "thinking", "tool_started", "tool_finished", "answer"
+    detail: str = ""
+
+
+@dataclass
+class GoalToolEvent:
+    type: Literal["goal_tool"] = "goal_tool"
+    tool: str = ""
+    args: str = ""  # JSON string
+    success: bool = False
+    output: str = ""
+
+
+@dataclass
+class GoalFinishedEvent:
+    type: Literal["goal_finished"] = "goal_finished"
+    answer: str = ""
+    iterations: int = 0
+    tools_used: int = 0
+
+
+@dataclass
+class GoalConfirmationEvent:
+    type: Literal["goal_confirmation"] = "goal_confirmation"
+    question: str = ""
+    pending_tool: str = ""
+    pending_args: str = ""  # JSON string
+
+
 BackendEvent = (
     HelloEvent
     | StateEvent
@@ -335,6 +393,14 @@ BackendEvent = (
     | ScreenOcrDoneEvent
     | ScreenContextReadyEvent
     | ScreenContextErrorEvent
+    | WakeListeningEvent
+    | WakeDetectedEvent
+    | WakeStoppedEvent
+    | GoalStartedEvent
+    | GoalProgressEvent
+    | GoalToolEvent
+    | GoalFinishedEvent
+    | GoalConfirmationEvent
 )
 
 
@@ -543,6 +609,23 @@ class AskAboutScreenCommand:
     mode: str = "auto"
 
 
+@dataclass
+class StartWakeWordCommand:
+    type: Literal["start_wake_word"] = "start_wake_word"
+
+
+@dataclass
+class StopWakeWordCommand:
+    type: Literal["stop_wake_word"] = "stop_wake_word"
+
+
+@dataclass
+class SubmitGoalCommand:
+    type: Literal["submit_goal"] = "submit_goal"
+    goal: str = ""
+    context: str = ""
+
+
 FrontendCommand = (
     PingCommand
     | StartRecordingCommand
@@ -576,6 +659,9 @@ FrontendCommand = (
     | CaptureScreenContextCommand
     | SubmitScreenQuestionCommand
     | AskAboutScreenCommand
+    | StartWakeWordCommand
+    | StopWakeWordCommand
+    | SubmitGoalCommand
 )
 
 
@@ -629,6 +715,9 @@ def parse_command(raw: str) -> FrontendCommand | ErrorEvent:
         "capture_screen_context": CaptureScreenContextCommand,
         "submit_screen_question": SubmitScreenQuestionCommand,
         "ask_about_screen": AskAboutScreenCommand,
+        "start_wake_word": StartWakeWordCommand,
+        "stop_wake_word": StopWakeWordCommand,
+        "submit_goal": SubmitGoalCommand,
     }
 
     cls = mapping.get(typ)

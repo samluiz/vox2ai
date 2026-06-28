@@ -82,7 +82,7 @@ function copyText(text, button = null) {
   button.set_label(_("Copied"));
   GLib.timeout_add(GLib.PRIORITY_DEFAULT, 1200, () => {
     button.set_label(original);
-    return GLib.SOURCE_REMOVE;
+    return false;
   });
 }
 
@@ -231,6 +231,7 @@ export default class Vox2aiPreferences extends ExtensionPreferences {
 
     this._buildGeneral(page, settings);
     this._buildVoice(page, settings);
+    this._buildVoiceActivation(page, settings);
     this._buildScreen(page, settings);
     this._buildAI(page);
     this._buildDiagnostics(page);
@@ -442,6 +443,109 @@ export default class Vox2aiPreferences extends ExtensionPreferences {
     this._whisperModelRow.connect("changed", () => this._sendVoiceSettings());
     group.add(this._whisperModelRow);
     page.add(group);
+  }
+
+  _buildVoiceActivation(page, settings) {
+    const group = new Adw.PreferencesGroup({
+      title: _("Voice Activation"),
+      description: _("Wake word detection. Say the wake phrase to activate hands-free."),
+    });
+
+    const enabled = new Adw.SwitchRow({
+      title: _("Enable voice activation"),
+      subtitle: _("Passive wake word detection runs while idle. Low CPU usage."),
+    });
+    settings.bind("wake-word-enabled", enabled, "active", Gio.SettingsBindFlags.DEFAULT);
+    enabled.connect("notify::active", () => this._sendWakeSettings());
+    group.add(enabled);
+
+    const sensitivityRow = new Adw.ActionRow({
+      title: _("Sensitivity"),
+      subtitle: _("Higher = more sensitive, may trigger on similar words."),
+    });
+    const scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.1, 0.99, 0.05);
+    scale.set_digits(2);
+    scale.set_draw_value(true);
+    scale.set_value(settings.get_double("wake-word-threshold"));
+    scale.set_property("width-request", 200);
+    scale.connect("value-changed", () => {
+      settings.set_double("wake-word-threshold", scale.get_value());
+      this._sendWakeSettings();
+    });
+    sensitivityRow.add_suffix(scale);
+    sensitivityRow.set_activatable_widget(scale);
+    group.add(sensitivityRow);
+
+    const wakeStatus = new Adw.ActionRow({
+      title: _("Wake engine"),
+      subtitle: _("Will start when backend connects"),
+    });
+    group.add(wakeStatus);
+    this._wakeStatusRow = wakeStatus;
+
+    // Test wake phrase
+    const testRow = new Adw.ActionRow({
+      title: _("Test wake phrase"),
+      subtitle: _("Say the wake phrase to verify detection."),
+    });
+    this._wakeTestButton = this._mkButton(_("Start test"), () => this._toggleWakeTest());
+    testRow.add_suffix(this._wakeTestButton);
+    group.add(testRow);
+    this._wakeTestRow = testRow;
+    this._wakeTestRunning = false;
+
+    page.add(group);
+
+    // Experimental section
+    const expGroup = new Adw.PreferencesGroup({
+      title: _("Experimental"),
+      description: _("Optional features that may change or be removed."),
+    });
+    const shortcutEnabled = new Adw.SwitchRow({
+      title: _("Keyboard shortcut"),
+      subtitle: _("Ctrl+Space to activate. Disabled — use voice activation instead."),
+    });
+    settings.bind("keyboard-shortcut-enabled", shortcutEnabled, "active", Gio.SettingsBindFlags.DEFAULT);
+    expGroup.add(shortcutEnabled);
+    page.add(expGroup);
+  }
+
+  _sendWakeSettings() {
+    this._connection?.send({
+      type: "update_settings",
+      settings: {
+        wake_word: {
+          enabled: this._settings.get_boolean("wake-word-enabled"),
+          model: "hey_jarvis",
+          threshold: this._settings.get_double("wake-word-threshold"),
+        },
+      },
+    });
+    // Also start/stop wake engine directly
+    if (this._settings.get_boolean("wake-word-enabled"))
+      this._connection?.send({ type: "start_wake_word" });
+    else
+      this._connection?.send({ type: "stop_wake_word" });
+  }
+
+  _toggleWakeTest() {
+    if (this._wakeTestRunning) this._stopWakeTest();
+    else this._startWakeTest();
+  }
+
+  _startWakeTest() {
+    this._wakeTestRunning = true;
+    this._wakeTestButton?.set_label(_("Stop test"));
+    this._wakeTestRow?.set_subtitle(_("Listening for \"Hey Jarvis\"..."));
+    this._sendWakeSettings();
+    this._connection?.send({ type: "start_wake_word" });
+  }
+
+  _stopWakeTest() {
+    this._wakeTestRunning = false;
+    this._wakeTestButton?.set_label(_("Start test"));
+    this._wakeTestRow?.set_subtitle(_("Test stopped."));
+    this._connection?.send({ type: "stop_wake_word" });
   }
 
   _buildScreen(page, settings) {
@@ -906,6 +1010,23 @@ export default class Vox2aiPreferences extends ExtensionPreferences {
         this._apiKeyRow?.set_subtitle(
           event.ok ? _("Connection works") : event.message,
         );
+        break;
+      case "wake_listening":
+        this._wakeStatusRow?.set_subtitle(
+          `Listening (${event.model || "unknown"}, threshold ${Number(event.threshold || 0).toFixed(2)})`,
+        );
+        if (this._wakeTestRunning)
+          this._wakeTestRow?.set_subtitle(`Listening for "${event.model || "wake word"}"...`);
+        break;
+      case "wake_detected":
+        this._wakeStatusRow?.set_subtitle(_("Wake word detected!"));
+        if (this._wakeTestRunning) {
+          this._wakeTestRow?.set_subtitle(_("Detected! Wake word recognized."));
+          this._stopWakeTest();
+        }
+        break;
+      case "wake_stopped":
+        this._wakeStatusRow?.set_subtitle(_("Stopped"));
         break;
     }
   }

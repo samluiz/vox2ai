@@ -75,13 +75,17 @@ export const PanelIndicator = class PanelIndicator extends PanelMenu.Button {
     _syncDot(state) {
         const s = state.status;
         this._dot.set_icon_size(16);
-        this._dot.style_class = 'system-status-icon vox2ai-panel-icon vox2ai-panel-icon-idle';
-        if (s === State.LISTENING)
+        // Wake listening = mic active (green), otherwise idle
+        if (state.wakeListening)
+            this._dot.style_class = 'system-status-icon vox2ai-panel-icon vox2ai-panel-icon-recording';
+        else if (s === State.LISTENING)
             this._dot.style_class = 'system-status-icon vox2ai-panel-icon vox2ai-panel-icon-recording';
         else if (s === State.ERROR || s === State.DISCONNECTED)
             this._dot.style_class = 'system-status-icon vox2ai-panel-icon vox2ai-panel-icon-error';
         else if (s === State.BACKEND_STARTING)
             this._dot.style_class = 'system-status-icon vox2ai-panel-icon vox2ai-panel-icon-pending';
+        else
+            this._dot.style_class = 'system-status-icon vox2ai-panel-icon vox2ai-panel-icon-idle';
     }
 
     _openPrefs() {
