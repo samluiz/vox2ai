@@ -499,6 +499,79 @@
   color: rgba(255, 255, 255, 0.86);
 }
 
+/* ── Inline command card ─────────────────────── */
+
+.vox2ai-command-card {
+  margin: 6px 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+
+.vox2ai-command-card-code {
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.vox2ai-command-card-text {
+  font-family: monospace;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.vox2ai-command-card-meta {
+  padding: 2px 0;
+}
+
+.vox2ai-safe-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: #4ade80;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(74, 222, 128, 0.1);
+}
+
+.vox2ai-unsafe-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: #facc15;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(250, 204, 21, 0.1);
+}
+
+.vox2ai-command-card-actions {
+  padding-top: 2px;
+}
+
+.vox2ai-command-card-progress {
+  padding: 6px 0;
+}
+
+.vox2ai-progress-check {
+  font-size: 13px;
+  color: #4ade80;
+}
+
+.vox2ai-progress-fail {
+  font-size: 13px;
+  color: #ff5a64;
+}
+
+.vox2ai-command-result {
+  margin: 4px 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.vox2ai-command-result-output {
+  margin-top: 4px;
+}
+
 /* ── Error ────────────────────────────────────────── */
 
 .vox2ai-error {

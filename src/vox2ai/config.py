@@ -84,6 +84,7 @@ refine = false
 
 [commands]
 mode = "ask-before-run"
+approval_mode = "ask"
 timeout_seconds = 30
 max_output_chars = 12000
 working_directory = "."
@@ -518,6 +519,7 @@ class OverlayConfig(BaseModel):
 
 class CommandsConfig(BaseModel):
     mode: str = "ask-before-run"
+    approval_mode: str = "ask"
     timeout_seconds: int = 30
     max_output_chars: int = 12000
     working_directory: str = "."
@@ -544,6 +546,14 @@ class CommandsConfig(BaseModel):
         allowed = {"disabled", "ask-before-run", "allow-all"}
         if v not in allowed:
             raise ValueError(f"commands.mode must be one of {allowed}")
+        return v
+
+    @field_validator("approval_mode")
+    @classmethod
+    def validate_approval_mode(cls, v: str) -> str:
+        allowed = {"ask", "safe_only", "always"}
+        if v not in allowed:
+            raise ValueError(f"commands.approval_mode must be one of {allowed}")
         return v
 
 

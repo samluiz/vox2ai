@@ -692,6 +692,25 @@ export default class Vox2aiPreferences extends ExtensionPreferences {
       Gio.SettingsBindFlags.DEFAULT,
     );
     group.add(safeMode);
+
+    const approvalMode = new Adw.ComboRow({ title: _("Command approval") });
+    const approvalLabels = [
+      _("Always ask"),
+      _("Auto-approve safe commands"),
+      _("Auto-approve everything"),
+    ];
+    const approvalValues = ["ask", "safe_only", "always"];
+    approvalMode.set_model(new Gtk.StringList({ strings: approvalLabels }));
+    const currentApproval = settings.get_string("command-approval-mode") || "ask";
+    approvalMode.set_selected(Math.max(0, approvalValues.indexOf(currentApproval)));
+    approvalMode.connect("notify::selected", () => {
+      const idx = approvalMode.get_selected();
+      if (idx >= 0 && idx < approvalValues.length) {
+        settings.set_string("command-approval-mode", approvalValues[idx]);
+        this._sendCommandApprovalMode(approvalValues[idx]);
+      }
+    });
+    group.add(approvalMode);
     group.add(
       new Adw.ActionRow({
         title: _("Backend service name"),
@@ -922,6 +941,15 @@ export default class Vox2aiPreferences extends ExtensionPreferences {
           max_turns: this._settings.get_int("conversation-max-turns"),
           max_messages: this._settings.get_int("conversation-max-turns") * 2,
         },
+      },
+    });
+  }
+
+  _sendCommandApprovalMode(mode) {
+    this._connection?.send({
+      type: "update_settings",
+      settings: {
+        commands: { approval_mode: mode },
       },
     });
   }

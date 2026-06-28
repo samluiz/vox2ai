@@ -105,6 +105,7 @@ class CommandApprovalEvent:
     working_directory: str = ""
     risk: Literal["low", "medium", "high"] = "low"
     expected_effect: str = ""
+    safe: bool = True
 
 
 @dataclass

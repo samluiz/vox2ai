@@ -80,6 +80,69 @@ def classify_command_risk(command: str) -> CommandRisk:
     return "low"
 
 
+def is_safe_command(command: str) -> bool:
+    cmd_lower = command.lower()
+    safe_patterns = [
+        "ls ",
+        "cat ",
+        "find ",
+        "grep ",
+        "journalctl",
+        "systemctl status",
+        "uname ",
+        "uname",
+        "free ",
+        "free",
+        "lspci",
+        "lsusb",
+        "gsettings get",
+        "which ",
+        "whereis ",
+        "stat ",
+        "file ",
+        "df ",
+        "df",
+        "du ",
+        "echo ",
+        "date",
+        "whoami",
+        "id ",
+        "id",
+        "hostname",
+        "printenv",
+        "pwd",
+        "pwd",
+        "groups",
+        "nproc",
+        "uptime",
+        "ps ",
+        "pgrep ",
+        "pidof ",
+        "head ",
+        "tail ",
+        "wc ",
+        "sort ",
+        "uniq ",
+        "cut ",
+        "tr ",
+        "diff ",
+        "comm ",
+        "sed -n",
+        "sed ",
+        "awk ",
+        "xargs ",
+        "tee ",
+        "basename",
+        "dirname",
+        "realpath",
+        "type ",
+        "command -v",
+        "dmesg",
+        "ip ",
+    ]
+    return any(cmd_lower.startswith(pattern) for pattern in safe_patterns)
+
+
 def describe_command_effect(command: str) -> str:
     """Return a concise expected-effect description for command approval."""
     cmd = command.strip()

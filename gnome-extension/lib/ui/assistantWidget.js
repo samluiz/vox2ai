@@ -542,13 +542,13 @@ export const AssistantWidget = class AssistantWidget
           this._renderScreenAnswering(state);
           break;
         case State.COMMAND_APPROVAL:
-          this._renderCommandApproval(state.commandApproval);
+          // ponytail: fall through to inline rendering — separate approval page is gone
           break;
         case State.COMMAND_RUNNING:
-          this._renderProcessing(_("Running command..."), true);
+          // ponytail: handled inline in answer/chat states
           break;
         case State.RESULT:
-          this._renderResult(state.commandResult);
+          // ponytail: handled inline in answer/chat states
           break;
         case State.ERROR:
           this._renderError(state.error || _("Unknown error"));
@@ -865,6 +865,12 @@ export const AssistantWidget = class AssistantWidget
         this._controller.cancel();
       }),
     );
+
+    if (this._shouldShowCommandInline(state)) {
+      this._renderCommandCard(state, box);
+      this._renderCommandResult(state, box);
+    }
+
     this._body.add_child(box);
   }
 
@@ -929,6 +935,13 @@ export const AssistantWidget = class AssistantWidget
       }
     }
     if (row.get_children().length > 0) box.add_child(row);
+
+    // ponytail: inline command card after answer
+    if (this._shouldShowCommandInline(state)) {
+      this._renderCommandCard(state, box);
+      this._renderCommandResult(state, box);
+    }
+
     this._body.add_child(box);
 
     if (state.conversationMode && !state.answerStreaming && state.answer)
@@ -1028,6 +1041,12 @@ export const AssistantWidget = class AssistantWidget
       }
     }
     if (row.get_children().length > 0) box.add_child(row);
+
+    if (this._shouldShowCommandInline(state)) {
+      this._renderCommandCard(state, box);
+      this._renderCommandResult(state, box);
+    }
+
     this._body.add_child(box);
 
     if (state.conversationMode && !state.answerStreaming && state.answer)
@@ -1589,10 +1608,171 @@ export const AssistantWidget = class AssistantWidget
       this._renderInChatThinking(state, box);
     }
 
+    // ponytail: inline command cards in chat timeline
+    if (this._shouldShowCommandInline(state)) {
+      this._renderCommandCard(state, content);
+      this._renderCommandResult(state, content);
+    }
+
     if (state.status === State.ANSWERING && state.answerStreaming) {
       this._scrollArea.scrollToBottom();
       this._chatAtBottom = true;
     }
+  }
+
+  // ── Inline command card ───────────────────────────
+
+  _renderCommandCard(state, parentBox) {
+    const approval = state.commandApproval;
+    if (!approval) return;
+
+    const card = vbox(6, "vox2ai-command-card");
+
+    // Command code block
+    const cmdBox = new St.Widget({
+      layout_manager: new Clutter.BoxLayout({ spacing: 6 }),
+      style_class: "vox2ai-command-card-code",
+    });
+    const cmdLabel = new St.Label({
+      text: approval.command || "",
+      style_class: "vox2ai-command-card-text",
+    });
+    cmdLabel.clutter_text.set_line_wrap(true);
+    cmdBox.add_child(cmdLabel);
+    cmdBox.add_child(new St.Widget({ x_expand: true }));
+
+    const copyBtn = new St.Button({
+      style_class: "vox2ai-code-copy-button",
+      label: _("Copy"),
+      reactive: true,
+      can_focus: true,
+      track_hover: true,
+    });
+    copyBtn.connect("clicked", () => this._controller.copyText(approval.command, "Command copied"));
+    cmdBox.add_child(copyBtn);
+    card.add_child(cmdBox);
+
+    // Risk + safe/unsafe badges
+    const metaRow = hbox(6, "vox2ai-command-card-meta");
+    const risk = approval.risk || "low";
+    const riskClass = risk === "high" ? "vox2ai-risk-high" : risk === "medium" ? "vox2ai-risk-medium" : "vox2ai-risk-low";
+    metaRow.add_child(new St.Label({
+      text: `Risk: ${risk.charAt(0).toUpperCase() + risk.slice(1)}`,
+      style_class: `vox2ai-risk ${riskClass}`,
+    }));
+    const safeLabel = approval.safe !== false ? "Read-only" : "Modifies system";
+    const safeClass = approval.safe !== false ? "vox2ai-safe-badge" : "vox2ai-unsafe-badge";
+    metaRow.add_child(new St.Label({ text: safeLabel, style_class: safeClass }));
+    metaRow.add_child(new St.Widget({ x_expand: true }));
+    card.add_child(metaRow);
+
+    // Expected effect
+    if (approval.expectedEffect) {
+      card.add_child(wrappedLabel(approval.expectedEffect, "vox2ai-detail"));
+    }
+
+    // Progress state when running
+    if (state.commandRunning) {
+      const progressBox = hbox(6, "vox2ai-command-card-progress");
+      progressBox.add_child(new St.Label({ text: "\u2713", style_class: "vox2ai-progress-check" }));
+      progressBox.add_child(wrappedLabel(state.commandProgress || _("Running..."), "vox2ai-processing-label"));
+      card.add_child(progressBox);
+    } else {
+      // Action buttons row
+      const btnRow = hbox(6, "vox2ai-command-card-actions");
+      btnRow.add_child(
+        this._button(_("Run"), "vox2ai-primary-button", () => this._controller.approveCommand()),
+      );
+      btnRow.add_child(
+        this._button(_("Explain"), "vox2ai-secondary-button", () =>
+          this._controller.explainCommand(approval.command || ""),
+        ),
+      );
+      btnRow.add_child(
+        this._button(_("Edit"), "vox2ai-secondary-button", () =>
+          this._showInlineEdit(approval.command || ""),
+        ),
+      );
+      btnRow.add_child(
+        this._button(_("Cancel"), "vox2ai-secondary-button", () =>
+          this._controller.cancelApproval(),
+        ),
+      );
+      card.add_child(btnRow);
+    }
+
+    parentBox.add_child(card);
+  }
+
+  _showInlineEdit(command) {
+    this._controller.cancelApproval();
+    GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+      if (this._destroyed) return false;
+      if (this._entry) {
+        this._entry.set_text(command);
+        this._entry.grab_key_focus();
+      }
+      return false;
+    });
+  }
+
+  _renderCommandResult(state, parentBox) {
+    const result = state.commandResult;
+    if (!result) return;
+
+    const box = vbox(4, "vox2ai-command-result");
+    const header = hbox(6, "");
+    const ok = result.exitCode === 0;
+    header.add_child(new St.Label({
+      text: ok ? "\u2713" : "\u2717",
+      style_class: ok ? "vox2ai-progress-check" : "vox2ai-progress-fail",
+    }));
+    header.add_child(wrappedLabel(
+      ok ? _("Command executed") : `Failed (exit ${result.exitCode})`,
+      "vox2ai-detail",
+    ));
+    box.add_child(header);
+
+    // Collapsible output
+    const toggleBtn = new St.Button({
+      label: _("View output \u25BE"),
+      style_class: "vox2ai-code-copy-button",
+      reactive: true,
+      can_focus: true,
+      track_hover: true,
+    });
+    let expanded = false;
+    let outputBox = null;
+    toggleBtn.connect("clicked", () => {
+      if (!expanded) {
+        outputBox = vbox(4, "vox2ai-command-result-output");
+        if (result.stdout) {
+          outputBox.add_child(new St.Label({ text: "stdout", style_class: "vox2ai-message-label" }));
+          outputBox.add_child(wrappedLabel(result.stdout, "vox2ai-command-output"));
+        }
+        if (result.stderr) {
+          outputBox.add_child(new St.Label({ text: "stderr", style_class: "vox2ai-message-label" }));
+          outputBox.add_child(wrappedLabel(result.stderr, "vox2ai-command-output vox2ai-command-output-error"));
+        }
+        box.add_child(outputBox);
+        toggleBtn.set_label(_("View output \u25B4"));
+      } else {
+        if (outputBox) {
+          box.remove_child(outputBox);
+          outputBox.destroy();
+          outputBox = null;
+        }
+        toggleBtn.set_label(_("View output \u25BE"));
+      }
+      expanded = !expanded;
+    });
+    box.add_child(toggleBtn);
+
+    parentBox.add_child(box);
+  }
+
+  _shouldShowCommandInline(state) {
+    return !!(state.commandApproval || state.commandRunning || state.commandResult);
   }
 
   _renderInChatThinking(state, parentBox) {

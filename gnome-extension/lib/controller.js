@@ -77,6 +77,8 @@ export const Controller = class Controller {
             recordingStopReason: '',
             commandApproval: null,
             commandResult: null,
+            commandProgress: '',
+            commandRunning: false,
             error: null,
             lastBackendError: null,
             settings: null,
@@ -214,6 +216,9 @@ export const Controller = class Controller {
                     enabled: safeGet(this._settings, 'get_boolean', 'wake-word-enabled', false),
                     model: safeGet(this._settings, 'get_string', 'wake-word-model', 'hey_jarvis'),
                     threshold: safeGet(this._settings, 'get_double', 'wake-word-threshold', 0.5),
+                },
+                commands: {
+                    approval_mode: safeGet(this._settings, 'get_string', 'command-approval-mode', 'ask'),
                 },
             },
         });
@@ -418,6 +423,8 @@ export const Controller = class Controller {
             audioPeak: 0,
             commandApproval: null,
             commandResult: null,
+            commandProgress: '',
+            commandRunning: false,
             error: null,
         });
 
@@ -765,12 +772,23 @@ export const Controller = class Controller {
 
     approveCommand() {
         this._send({type: 'approve_command'});
-        this._setStatus(State.COMMAND_RUNNING);
+        this._setState({commandRunning: true, commandProgress: 'Running...'});
     }
 
     denyCommand() {
         this._send({type: 'deny_command'});
-        this._resetToIdle();
+        this._setState({commandApproval: null, commandRunning: false, commandProgress: ''});
+    }
+
+    editCommand(newCommand) {
+        if (!newCommand) return;
+        this._setState({commandApproval: null, commandRunning: false, commandProgress: ''});
+        this._send({type: 'request_command_approval', command: newCommand, reason: 'Edited command.'});
+    }
+
+    cancelApproval() {
+        this._send({type: 'deny_command'});
+        this._setState({commandApproval: null, commandRunning: false, commandProgress: ''});
     }
 
     copyAnswer() {
@@ -965,19 +983,21 @@ export const Controller = class Controller {
                 this._playSound('answer-done');
                 break;
             case 'command_approval':
+                // ponytail: command cards are inline in chat — no page transition
                 this._setState({
-                    status: State.COMMAND_APPROVAL,
                     commandApproval: {
                         command: event.command || '',
                         reason: event.reason || null,
                         risk: event.risk || 'low',
                         workingDirectory: event.working_directory || '.',
                         expectedEffect: event.expected_effect || '',
+                        safe: event.safe !== false,
                     },
                 });
                 break;
             case 'command_running':
-                this._setStatus(State.COMMAND_RUNNING);
+                // ponytail: update progress inline, no state change
+                this._setState({commandRunning: true, commandProgress: 'Running...'});
                 break;
             case 'command_result':
                 {
@@ -988,8 +1008,10 @@ export const Controller = class Controller {
                         stderr: event.stderr || '',
                     };
                     this._setState({
-                        status: State.RESULT,
                         commandResult: result,
+                        commandRunning: false,
+                        commandProgress: '',
+                        commandApproval: null,
                     });
                     this._notifyCommandDone(event);
                 }
@@ -1376,6 +1398,8 @@ export const Controller = class Controller {
             recordingStopReason: '',
             commandApproval: null,
             commandResult: null,
+            commandProgress: '',
+            commandRunning: false,
             error: null,
             copyFeedback: '',
             screenContext: {
@@ -1404,6 +1428,8 @@ export const Controller = class Controller {
             recordingStopReason: '',
             commandApproval: null,
             commandResult: null,
+            commandProgress: '',
+            commandRunning: false,
             error: null,
             screenContext: {
                 id: null,

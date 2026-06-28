@@ -1,7 +1,13 @@
 """Regression tests for output sanitizer."""
 
 import base64
-from vox2ai.agent.sanitizer import sanitize_output, sanitize_answer, sanitize_chunk, _looks_like_protocol
+
+from vox2ai.agent.sanitizer import (
+    _looks_like_protocol,
+    sanitize_answer,
+    sanitize_chunk,
+    sanitize_output,
+)
 
 
 class TestSanitizeOutput:

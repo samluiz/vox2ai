@@ -24,6 +24,7 @@ from vox2ai.commands import (
     classify_command_risk,
     describe_command_effect,
     is_blocked,
+    is_safe_command,
     requires_approval,
     run_command,
 )
@@ -1425,6 +1426,22 @@ class DesktopController:
                 return
 
             risk = classify_command_risk(decision.command or "")
+            command_safe = is_safe_command(decision.command or "")
+            approval_mode = cmd_config.approval_mode
+
+            # Auto-approve: always mode, or safe_only with safe command
+            auto_approve = ((approval_mode == "always") or
+                            (approval_mode == "safe_only" and command_safe and risk != "high"))
+
+            if auto_approve:
+                safe_msg = f"Running `{decision.command}`\n"
+                self._state = ServerState.RUNNING_COMMAND
+                self._send(CommandRunningEvent(command=decision.command or ""))
+                self._send(AnswerStartEvent())
+                self._send(AnswerDeltaEvent(text=safe_msg))
+                await self._execute_command(decision, generation, skip_running_event=True)
+                return
+
             if requires_approval(decision.command or "", cmd_config) or risk == "high":
                 self._state = ServerState.APPROVAL_REQUIRED
                 self._pending_decision = decision
@@ -1440,6 +1457,7 @@ class DesktopController:
                         working_directory=str(Path(cmd_config.working_directory).resolve()),
                         risk=risk,
                         expected_effect=describe_command_effect(decision.command or ""),
+                        safe=command_safe,
                     )
                 )
                 return
@@ -1458,14 +1476,17 @@ class DesktopController:
 
         await self._stream_text(message, generation)
 
-    async def _execute_command(self, decision: AgentDecision, generation: int) -> None:
+    async def _execute_command(
+        self, decision: AgentDecision, generation: int, skip_running_event: bool = False
+    ) -> None:
         if decision.command is None:
             return
         if generation != self._operation_generation:
             return
 
         self._state = ServerState.RUNNING_COMMAND
-        self._send(CommandRunningEvent(command=decision.command))
+        if not skip_running_event:
+            self._send(CommandRunningEvent(command=decision.command))
         self._timer.start("command")
 
         result = await _run_blocking(_do_run_command, decision.command, self._config)
@@ -1989,6 +2010,8 @@ def _apply_settings_patch(config: AppConfig, patch: dict[str, Any]) -> AppConfig
 
     if "commands" in patch:
         for k, v in patch["commands"].items():
+            if k == "approval_mode" and v not in {"ask", "safe_only", "always"}:
+                continue
             if hasattr(updated.commands, k):
                 setattr(updated.commands, k, v)
 

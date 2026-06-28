@@ -78,6 +78,7 @@ def sanitize_config(config: AppConfig) -> dict[str, object]:
         },
         "commands": {
             "mode": config.commands.mode,
+            "approval_mode": config.commands.approval_mode,
             "timeout_seconds": config.commands.timeout_seconds,
             "max_output_chars": config.commands.max_output_chars,
             "working_directory": config.commands.working_directory,

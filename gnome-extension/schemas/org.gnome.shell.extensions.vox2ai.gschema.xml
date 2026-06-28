@@ -187,6 +187,13 @@
       <description>Keep captured screenshots for debugging. Off by default.</description>
     </key>
 
+    <!-- Command execution -->
+    <key name="command-approval-mode" type="s">
+      <default>"ask"</default>
+      <summary>Command approval mode</summary>
+      <description>When to approve shell commands: "ask" (always ask), "safe_only" (auto-approve read-only), "always" (auto-approve everything). Always stops for blocked patterns.</description>
+    </key>
+
     <!-- Wake word -->
     <key name="wake-word-enabled" type="b">
       <default>false</default>
